@@ -1,0 +1,10 @@
+module FLLibrary
+
+singleton Theme 1.0 Theme.qml
+singleton Icons 1.0 Icons.qml
+
+Main 1.0 Main.qml
+SettingsPage 1.0 SettingsPage.qml
+PlaylistPage 1.0 PlaylistPage.qml
+ProjectPage 1.0 ProjectPage.qml
+FirstRunWizard 1.0 FirstRunWizard.qml

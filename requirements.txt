@@ -1,0 +1,35 @@
+# FL Library Pro - Dependencies
+
+# Core UI Framework
+PySide6>=6.6.0
+
+# Audio Playback
+python-vlc>=3.0.20
+
+# Waveform & Audio Analysis
+numpy>=1.26.0
+scipy>=1.11.0
+soundfile>=0.12.1
+
+# BPM & Key Detection (optional, heavy dependencies)
+librosa>=0.10.1
+essentia>=2.1b6.dev1034; platform_system == "Windows"
+
+# Database
+# (SQLite is built-in)
+
+# File Watching
+watchdog>=3.0.0
+
+# Utilities
+mutagen>=1.47.0        # Audio metadata
+Pillow>=10.1.0         # Image processing
+colorama>=0.4.6        # Console colors (dev)
+
+# Packaging
+pyinstaller>=6.3.0
+
+# Development
+black>=23.12.0
+ruff>=0.1.9
+pytest>=7.4.0

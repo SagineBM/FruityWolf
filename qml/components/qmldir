@@ -1,0 +1,10 @@
+module Components
+
+SvgIcon 1.0 SvgIcon.qml
+IconButton 1.0 IconButton.qml
+NavButton 1.0 NavButton.qml
+TrackItem 1.0 TrackItem.qml
+PlayerBar 1.0 PlayerBar.qml
+SearchBar 1.0 SearchBar.qml
+KeyboardShortcutsHelp 1.0 KeyboardShortcutsHelp.qml
+QueueDrawer 1.0 QueueDrawer.qml

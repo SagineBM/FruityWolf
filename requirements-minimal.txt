@@ -1,0 +1,18 @@
+# FL Library Pro - Minimal Requirements
+# Use this for faster installation (without optional analysis features)
+
+# Core UI Framework
+PySide6>=6.6.0
+
+# Audio Playback (VLC is most reliable)
+python-vlc>=3.0.20
+
+# Waveform extraction (minimal)
+numpy>=1.26.0
+soundfile>=0.12.1
+
+# Audio metadata
+mutagen>=1.47.0
+
+# File watching
+watchdog>=3.0.0

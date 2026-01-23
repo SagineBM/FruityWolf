@@ -1,0 +1,32 @@
+{
+    "name": "FL Library Pro",
+    "version": "1.0.0",
+    "description": "A Spotify-like library manager and player for FL Studio project folders",
+    "author": "FL Library Pro Team",
+    "license": "MIT",
+    "python_requires": ">=3.11",
+    "entry_point": "FruityWolf.__main__:main",
+    "default_library_root": "F:\\1.Project FL S1",
+    "audio_extensions": [
+        ".wav",
+        ".mp3",
+        ".flac",
+        ".ogg",
+        ".m4a",
+        ".aiff"
+    ],
+    "project_file_extension": ".flp",
+    "subfolders": {
+        "audio": "Audio",
+        "samples": "Samples",
+        "stems": "Stems",
+        "backup": "Backup"
+    },
+    "settings": {
+        "theme": "dark",
+        "default_volume": 0.8,
+        "waveform_cache_size_mb": 500,
+        "auto_scan_on_startup": true,
+        "watch_for_changes": true
+    }
+}
