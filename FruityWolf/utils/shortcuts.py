@@ -57,6 +57,7 @@ DEFAULT_SHORTCUTS = {
     'quit': 'Ctrl+Q',
     'fullscreen': 'F11',
     'toggle_queue': 'Q',  # Toggle queue panel
+    'command_palette': 'Ctrl+P',  # Command palette
 }
 
 

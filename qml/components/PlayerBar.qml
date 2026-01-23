@@ -291,53 +291,15 @@ Rectangle {
                     Layout.preferredWidth: 50
                 }
                 
-                // Progress slider - enhanced for easier grabbing
-                Slider {
+                // Waveform Slider
+                WaveformSlider {
                     id: progressSlider
                     Layout.fillWidth: true
-                    from: 0
-                    to: 1
                     value: root.position
                     
-                    background: Rectangle {
-                        x: progressSlider.leftPadding
-                        y: progressSlider.topPadding + progressSlider.availableHeight / 2 - height / 2
-                        width: progressSlider.availableWidth
-                        height: progressSlider.pressed || progressSlider.hovered ? 8 : 6
-                        radius: height / 2
-                        color: Theme.border
-                        
-                        Behavior on height {
-                            NumberAnimation { duration: Theme.animFast }
-                        }
-                        
-                        Rectangle {
-                            width: progressSlider.visualPosition * parent.width
-                            height: parent.height
-                            radius: height / 2
-                            
-                            gradient: Gradient {
-                                orientation: Gradient.Horizontal
-                                GradientStop { position: 0.0; color: Theme.accent }
-                                GradientStop { position: 1.0; color: Theme.accentHover }
-                            }
-                        }
+                    onMoved: function(val) {
+                        root.seek(val)
                     }
-                    
-                    handle: Rectangle {
-                        x: progressSlider.leftPadding + progressSlider.visualPosition * (progressSlider.availableWidth - width)
-                        y: progressSlider.topPadding + progressSlider.availableHeight / 2 - height / 2
-                        width: progressSlider.pressed || progressSlider.hovered ? 18 : 0
-                        height: width
-                        radius: width / 2
-                        color: Theme.text
-                        
-                        Behavior on width {
-                            NumberAnimation { duration: Theme.animFast }
-                        }
-                    }
-                    
-                    onMoved: root.seek(value)
                 }
                 
                 // Remaining time (negative format)
@@ -428,5 +390,10 @@ Rectangle {
         var mins = Math.floor(seconds / 60)
         var secs = Math.floor(seconds % 60)
         return mins + ":" + (secs < 10 ? "0" : "") + secs
+    }
+    
+    function setPeaks(min, max) {
+        progressSlider.peaksMin = min
+        progressSlider.peaksMax = max
     }
 }

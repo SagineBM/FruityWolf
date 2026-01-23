@@ -48,9 +48,10 @@ Popup {
                 anchors.centerIn: parent
                 spacing: 8
                 
-                Text {
-                    text: "🎵"
-                    font.pixelSize: 48
+                SvgIcon {
+                    iconName: Icons.music
+                    size: 48
+                    color: Theme.text
                     Layout.alignment: Qt.AlignHCenter
                 }
                 
@@ -95,25 +96,25 @@ Popup {
                     spacing: 12
                     
                     FeatureItem {
-                        icon: "🎵"
+                        iconName: Icons.music
                         text: "Instant in-app audio playback"
                         Theme: wizard.Theme
                     }
                     
                     FeatureItem {
-                        icon: "🔍"
+                        iconName: Icons.search
                         text: "Fast search across all your projects"
                         Theme: wizard.Theme
                     }
                     
                     FeatureItem {
-                        icon: "📊"
+                        iconName: Icons.waveform
                         text: "BPM and Key detection"
                         Theme: wizard.Theme
                     }
                     
                     FeatureItem {
-                        icon: "❤️"
+                        iconName: Icons.heart
                         text: "Favorites and playlists"
                         Theme: wizard.Theme
                     }
@@ -156,9 +157,10 @@ Popup {
                         anchors.margins: 16
                         spacing: 16
                         
-                        Text {
-                            text: "📁"
-                            font.pixelSize: 32
+                        SvgIcon {
+                            iconName: Icons.folder
+                            size: 32
+                            color: Theme.textMuted
                         }
                         
                         ColumnLayout {
@@ -214,9 +216,10 @@ Popup {
                         anchors.margins: 12
                         spacing: 12
                         
-                        Text {
-                            text: "💡"
-                            font.pixelSize: 20
+                        SvgIcon {
+                            iconName: Icons.info
+                            size: 20
+                            color: Theme.accent
                         }
                         
                         Text {
@@ -337,9 +340,10 @@ Popup {
                 
                 Item { Layout.fillHeight: true }
                 
-                Text {
-                    text: "✅"
-                    font.pixelSize: 64
+                SvgIcon {
+                    iconName: Icons.check
+                    size: 64
+                    color: Theme.success
                     Layout.alignment: Qt.AlignHCenter
                 }
                 
@@ -443,7 +447,7 @@ Popup {
     
     // Feature item component
     component FeatureItem: RowLayout {
-        property string icon: ""
+        property string iconName: ""
         property string text: ""
         property var Theme
         
@@ -455,12 +459,21 @@ Popup {
             radius: 8
             color: Theme.surface
             
-            Text {
+            SvgIcon {
                 anchors.centerIn: parent
-                text: icon
-                font.pixelSize: 18
+                iconName: parent.parent.iconName
+                size: 20
+                color: Theme.accent
             }
         }
+        
+        Text {
+            text: parent.text
+            font.pixelSize: 14
+            color: Theme.textSecondary
+            Layout.fillWidth: true
+        }
+    }
         
         Text {
             text: parent.text

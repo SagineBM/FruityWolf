@@ -35,8 +35,10 @@ from .ui.widgets import MarqueeLabel
 from .ui import (
     SettingsDialog, TagEditorDialog, AnalysisDialog, BatchAnalysisDialog,
     PlaylistPanel, PlaylistEditDialog, AddToPlaylistMenu,
-    MiniWaveformWidget, ProjectDrillDownPanel, TrackInfoCard
+    MiniWaveformWidget, ProjectDrillDownPanel, TrackInfoCard,
+    StatusBadge, CommandPaletteDialog
 )
+from .ui.projects_view import ProjectsView
 from .player import get_player, PlayerState, RepeatMode
 from .waveform import WaveformThread, get_cached_waveform
 from .analysis import AnalyzerThread, format_bpm, format_key, KEYS
@@ -645,7 +647,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"{__app_name__} v{__version__}")
         
         # Set window icon
-        icon_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "icon.svg")
+        icon_path = os.path.join(os.path.dirname(__file__), "resources", "icons", "app_icon.svg")
         if os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
             
@@ -710,6 +712,7 @@ class MainWindow(QMainWindow):
         self.shortcuts.register_shortcut('search', lambda: self.search_input.setFocus())
         self.shortcuts.register_shortcut('search_slash', lambda: self.search_input.setFocus())  # / key
         self.shortcuts.register_shortcut('toggle_queue', self.toggle_queue_panel)
+        self.shortcuts.register_shortcut('command_palette', self.show_command_palette)
     
     def _play_from_start(self):
         """Play current track from the beginning."""
@@ -742,6 +745,43 @@ class MainWindow(QMainWindow):
         menu.set_tracks([self.current_track['id']])
         menu.exec(self.cursor().pos())
     
+    def show_command_palette(self):
+        """Show command palette for quick keyboard navigation."""
+        success, result_type, result_data = CommandPaletteDialog.show_palette(
+            self.tracks_data, self
+        )
+        
+        if not success:
+            return
+        
+        if result_type == "track":
+            # Play the selected track
+            self.current_track = result_data
+            self.play_track(result_data)
+            self.update_details_panel(result_data)
+        elif result_type == "command":
+            # Execute command by ID
+            self._execute_palette_command(result_data)
+    
+    def _execute_palette_command(self, command_id: str):
+        """Execute a command palette command."""
+        commands = {
+            "nav:library": lambda: self.set_page("library"),
+            "nav:favorites": lambda: self.set_page("favorites"),
+            "nav:recent": lambda: self.set_page("recent"),
+            "nav:missing": lambda: self.set_page("missing"),
+            "nav:settings": lambda: self.set_page("settings"),
+            "action:analyze": self.analyze_track,
+            "action:edit": self.edit_metadata,
+            "action:favorite": self.toggle_favorite,
+            "action:open_flp": self.open_flp,
+            "action:open_folder": self.open_project_folder,
+            "action:rescan": self.rescan_library,
+        }
+        
+        if command_id in commands:
+            commands[command_id]()
+    
     def _connect_player_signals(self):
         """Connect player signals."""
         self.player.state_changed.connect(self.on_player_state_changed)
@@ -752,6 +792,8 @@ class MainWindow(QMainWindow):
         """Setup the main UI."""
         central = QWidget()
         self.setCentralWidget(central)
+        
+        self._create_menu_bar()
         
         main_layout = QVBoxLayout(central)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -795,7 +837,12 @@ class MainWindow(QMainWindow):
         
         self.nav_playlists = self._create_nav_button("Playlists", "playlist")
         self.nav_playlists.clicked.connect(lambda: self.set_page("playlists"))
+        self.nav_playlists.clicked.connect(lambda: self.set_page("playlists"))
         sidebar_layout.addWidget(self.nav_playlists)
+        
+        self.nav_projects = self._create_nav_button("Projects", "folder_open")
+        self.nav_projects.clicked.connect(lambda: self.set_page("projects"))
+        sidebar_layout.addWidget(self.nav_projects)
         
         self.nav_settings = self._create_nav_button("Settings", "settings")
         self.nav_settings.clicked.connect(lambda: self.set_page("settings"))
@@ -950,6 +997,11 @@ class MainWindow(QMainWindow):
         for g in genres[:8]: # Show top 8
             add_chip(g, f"genre:{g}")
             
+        # Add Stage Chips for filtering
+        add_chip("Ideas", "stage:IDEA")
+        add_chip("WIPs", "stage:WIP")
+        add_chip("Finished", "stage:FINISHED")
+            
         self.filter_layout.addStretch()
         filter_scroll.setWidget(filter_container)
         
@@ -978,40 +1030,45 @@ class MainWindow(QMainWindow):
         # Track list (Table View)
         self.track_list = QTableWidget()
         self.track_list.setObjectName("trackList")
-        # Expanded columns: Icon, Track, Project, Date, BPM, Key, Genre, +View, +Playlist, +Tags, +Analyze, Edit
-        self.track_list.setColumnCount(12)
+        # Expanded columns: Icon, Track, Project, Date, BPM, Key, Genre, STATUS, +View, +Playlist, +Tags, +Analyze, Edit
+        self.track_list.setColumnCount(13)
         # Set text labels for main columns, empty for icon columns
         self.track_list.setHorizontalHeaderLabels([
-            "", "TRACK", "PROJECT", "DATE", "BPM", "KEY", "GENRE",
+            "", "TRACK", "PROJECT", "DATE", "BPM", "KEY", "GENRE", "STATUS",
             "", "", "", "", "" 
         ])
         
         # Set icons for action columns
-        # 7: View (Eye)
-        self.track_list.setHorizontalHeaderItem(7, QTableWidgetItem(get_icon("eye", QColor("#94a3b8"), 16), ""))
-        self.track_list.horizontalHeaderItem(7).setToolTip("View Project")
+        # 7: Status
+        self.track_list.setHorizontalHeaderItem(7, QTableWidgetItem("STATUS"))
+        self.track_list.horizontalHeaderItem(7).setTextAlignment(Qt.AlignmentFlag.AlignLeft)
+
+        # 8: View (Eye)
+        self.track_list.setHorizontalHeaderItem(8, QTableWidgetItem(get_icon("eye", QColor("#94a3b8"), 16), ""))
+        self.track_list.horizontalHeaderItem(8).setToolTip("View Project")
         
-        # 8: Playlist (Folder/Playlist)
-        self.track_list.setHorizontalHeaderItem(8, QTableWidgetItem(get_icon("playlist", QColor("#94a3b8"), 16), ""))
-        self.track_list.horizontalHeaderItem(8).setToolTip("Add to Playlist")
+        # 9: Playlist (Folder/Playlist)
+        self.track_list.setHorizontalHeaderItem(9, QTableWidgetItem(get_icon("playlist", QColor("#94a3b8"), 16), ""))
+        self.track_list.horizontalHeaderItem(9).setToolTip("Add to Playlist")
         
-        # 9: Tags (Tag)
-        self.track_list.setHorizontalHeaderItem(9, QTableWidgetItem(get_icon("tag", QColor("#94a3b8"), 16), ""))
-        self.track_list.horizontalHeaderItem(9).setToolTip("Edit Tags")
+        # 10: Tags (Tag)
+        self.track_list.setHorizontalHeaderItem(10, QTableWidgetItem(get_icon("tag", QColor("#94a3b8"), 16), ""))
+        self.track_list.horizontalHeaderItem(10).setToolTip("Edit Tags")
         
-        # 10: Analyze (Audio/Waveform)
-        self.track_list.setHorizontalHeaderItem(10, QTableWidgetItem(get_icon("analyze", QColor("#94a3b8"), 16), ""))
-        self.track_list.horizontalHeaderItem(10).setToolTip("Analyze Audio")
+        # 11: Analyze (Audio/Waveform)
+        self.track_list.setHorizontalHeaderItem(11, QTableWidgetItem(get_icon("analyze", QColor("#94a3b8"), 16), ""))
+        self.track_list.horizontalHeaderItem(11).setToolTip("Analyze Audio")
         
-        # 11: Edit (Pen)
-        self.track_list.setHorizontalHeaderItem(11, QTableWidgetItem(get_icon("edit", QColor("#94a3b8"), 16), ""))
-        self.track_list.horizontalHeaderItem(11).setToolTip("Edit Metadata")
+        # 12: Edit (Pen)
+        self.track_list.setHorizontalHeaderItem(12, QTableWidgetItem(get_icon("edit", QColor("#94a3b8"), 16), ""))
+        self.track_list.horizontalHeaderItem(12).setToolTip("Edit Metadata")
         self.track_list.verticalHeader().setVisible(False)
         self.track_list.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)  # Track
         self.track_list.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)  # Project
+        self.track_list.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeMode.ResizeToContents)  # Status
         self.track_list.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
         # Action columns fixed width
-        for col in range(7, 12):
+        for col in range(8, 13):
             self.track_list.horizontalHeader().setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed)
             self.track_list.setColumnWidth(col, 32)
         self.track_list.setColumnWidth(0, 30)  # Playing/Fav Icon
@@ -1036,7 +1093,14 @@ class MainWindow(QMainWindow):
         self.project_panel = ProjectDrillDownPanel()
         self.project_panel.back_requested.connect(lambda: self.stack.setCurrentIndex(0))
         self.project_panel.track_play_requested.connect(self._play_external_file)
+        self.project_panel.track_play_requested.connect(self._play_external_file)
         self.stack.addWidget(self.project_panel)
+        
+        # 3. PROJECTS VIEW (New)
+        self.projects_view = ProjectsView()
+        self.projects_view.project_opened.connect(self.open_project_folder_path)
+        self.projects_view.project_selected.connect(self.update_details_panel)
+        self.stack.addWidget(self.projects_view)
         
         content.addWidget(self.stack, 1)  # Stretch
         
@@ -1263,6 +1327,19 @@ class MainWindow(QMainWindow):
         
         details_layout.addWidget(notes_group)
         
+        # Lyrics section
+        lyrics_group = QGroupBox("LYRICS")
+        lyrics_layout = QVBoxLayout(lyrics_group)
+        lyrics_layout.setContentsMargins(10, 14, 10, 10)
+        
+        self.lyrics_edit = QTextEdit()
+        self.lyrics_edit.setPlaceholderText("Add lyrics...")
+        self.lyrics_edit.setMaximumHeight(150)
+        self.lyrics_edit.textChanged.connect(self.save_lyrics)
+        lyrics_layout.addWidget(self.lyrics_edit)
+        
+        details_layout.addWidget(lyrics_group)
+        
         details_layout.addStretch()
         
         details_scroll.setWidget(details_container)
@@ -1379,42 +1456,27 @@ class MainWindow(QMainWindow):
         self.btn_repeat.clicked.connect(self.cycle_repeat)
         controls.addWidget(self.btn_repeat)
         
-        # Lock buttons
-        self.btn_shuffle.setFixedSize(32, 32)
-        self.btn_prev.setFixedSize(32, 32)
-        self.btn_play_pause.setFixedSize(40, 40)
-        self.btn_next.setFixedSize(32, 32)
-        self.btn_repeat.setFixedSize(32, 32)
-        
         center_layout.addLayout(controls)
         
-        # Row 2: Waveform visualization
+        # Row 2: Waveform visualization with Time
+        waveform_row = QHBoxLayout()
+        waveform_row.setSpacing(12)
+        
+        self.time_current = QLabel("0:00")
+        self.time_current.setObjectName("timeLabel")
+        waveform_row.addWidget(self.time_current)
+        
         self.mini_waveform = MiniWaveformWidget()
         self.mini_waveform.setFixedHeight(30)
         self.mini_waveform.setFixedWidth(450)
         self.mini_waveform.seek_requested.connect(self._on_waveform_seek)
-        center_layout.addWidget(self.mini_waveform)
-        
-        # Row 3: Progress (Time - Slider - Time)
-        progress_row = QHBoxLayout()
-        progress_row.setSpacing(8)
-        
-        self.time_current = QLabel("0:00")
-        self.time_current.setObjectName("timeLabel")
-        progress_row.addWidget(self.time_current)
-        
-        self.progress_slider = QSlider(Qt.Orientation.Horizontal)
-        self.progress_slider.setObjectName("progressSlider")
-        self.progress_slider.setRange(0, 1000)
-        self.progress_slider.sliderReleased.connect(self.seek)
-        self.progress_slider.setFixedWidth(400)
-        progress_row.addWidget(self.progress_slider)
+        waveform_row.addWidget(self.mini_waveform)
         
         self.time_total = QLabel("0:00")
         self.time_total.setObjectName("timeLabel")
-        progress_row.addWidget(self.time_total)
+        waveform_row.addWidget(self.time_total)
         
-        center_layout.addLayout(progress_row)
+        center_layout.addLayout(waveform_row)
         
         player_layout.addLayout(center_layout)
         
@@ -1474,9 +1536,18 @@ class MainWindow(QMainWindow):
         self.nav_settings.setChecked(page == "settings")
         self.nav_recent.setChecked(page == "recent")
         self.nav_missing.setChecked(page == "missing")
+        self.nav_projects.setChecked(page == "projects")
         
         if page == "library":
-            self.load_tracks()
+            # Only load if empty to prevent freeze on switch
+            if self.track_list.rowCount() == 0:
+                self.load_tracks()
+        elif page == "projects":
+            # ProjectsView handles its own data, we just show it.
+            # Only refresh if empty?
+            if self.projects_view.table.rowCount() == 0:
+                self.projects_view.refresh_data()
+            self.stack.setCurrentWidget(self.projects_view)
         elif page == "favorites":
             self.load_favorites()
         elif page == "settings":
@@ -1493,23 +1564,24 @@ class MainWindow(QMainWindow):
         elif page == "missing":
             self.load_missing_metadata()
             self.stack.setCurrentIndex(0)
+        
+        # Ensure we switch back to track list for library-based pages
+        if page in ["library", "favorites", "recent", "missing"]:
+             if self.stack.currentWidget() != self.track_list.parentWidget(): # Check if not on list stack
+                 # We need to ensure stack index 0 is MainList (which contains track_list)
+                 # Wait, stack index 0 is the `QVBox` containing `filter_scroll` and `track_list`.
+                 self.stack.setCurrentIndex(0)
 
     def load_recently_added(self):
         """Load tracks sorted by date added (newest first)."""
-        # self.tracks_data = sorted(get_all_tracks(limit=500), key=lambda x: x.get('mtime', 0), reverse=True)
-        # Assuming get_all_tracks returns unsorted or ID-sorted
-        all_tracks = get_all_tracks(limit=1000)
-        self.tracks_data = sorted(all_tracks, key=lambda x: x.get('mtime', 0), reverse=True)
+        from .scanner import get_recently_added_tracks
+        self.tracks_data = get_recently_added_tracks(limit=100)
         self.update_track_list()
         
     def load_missing_metadata(self):
         """Load tracks with missing BPM or Key."""
-        all_tracks = get_all_tracks(limit=5000)
-        self.tracks_data = [
-            t for t in all_tracks 
-            if (not t.get('bpm_user') and not t.get('bpm_detected')) 
-            or (not t.get('key_user') and not t.get('key_detected'))
-        ]
+        from .scanner import get_missing_metadata_tracks
+        self.tracks_data = get_missing_metadata_tracks(limit=500)
         self.update_track_list()
 
     
@@ -1564,7 +1636,7 @@ class MainWindow(QMainWindow):
     
     def load_tracks(self):
         """Load all tracks from database."""
-        self.tracks_data = get_all_tracks(limit=5000)
+        self.tracks_data = get_all_tracks(limit=200) # Reduced from 5000 for performance
         self.update_track_list()
     
     def load_favorites(self):
@@ -1574,133 +1646,200 @@ class MainWindow(QMainWindow):
     
     def update_track_list(self):
         """Update the track list widget."""
-        self.track_list.setRowCount(0)
-        self.track_list.setRowCount(len(self.tracks_data))
+        self.track_list.setUpdatesEnabled(False)
+        self.track_list.setSortingEnabled(False)
         
-        for row, track in enumerate(self.tracks_data):
-            title = track.get('title', 'Unknown')
-            project = track.get('project_name', '')
-            # Use mtime for date added/created
-            date_added = format_smart_date(track.get('mtime', 0))
-            bpm = track.get('bpm_user') or track.get('bpm_detected')
-            key = track.get('key_user') or track.get('key_detected')
+        try:
+            self.track_list.setRowCount(0)
+            self.track_list.setRowCount(len(self.tracks_data))
             
-            bpm_str = f"{bpm:.0f}" if bpm else ""
-            key_str = str(key) if key else ""
-            genre_str = track.get('genre') or ""
-            
-            # 0. Icon / Index
-            # If playing, show play icon, else show number or favorite heart?
-            # Let's show heart if favorite, else logic later
-            icon_item = QTableWidgetItem("")
-            if track.get('favorite'):
-                icon_item.setIcon(get_icon("heart", QColor("#ef4444"), 16))
-            else:
-                icon_item.setText(str(row + 1))
-            icon_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            icon_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-            # Store the track ID in the item data for retrieval after sorting
-            icon_item.setData(Qt.ItemDataRole.UserRole, track.get('id'))
-            self.track_list.setItem(row, 0, icon_item)
-            
-            # 1. Title
-            title_item = QTableWidgetItem(title)
-            title_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-            # Store the track ID in all items for easy retrieval
-            title_item.setData(Qt.ItemDataRole.UserRole, track.get('id'))
-            self.track_list.setItem(row, 1, title_item)
-            
-            # 2. Project
-            proj_item = QTableWidgetItem(project)
-            proj_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-            # proj_item.setForeground(QBrush(QColor("#94a3b8")))
-            self.track_list.setItem(row, 2, proj_item)
-            
-            # 3. Date
-            date_item = QTableWidgetItem(date_added)
-            date_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-            date_item.setForeground(QBrush(QColor("#94a3b8")))
-            # Tooltip for full date
-            full_date = format_timestamp(track.get('mtime', 0))
-            date_item.setToolTip(f"Added: {full_date}")
-            self.track_list.setItem(row, 3, date_item)
-            
-            # 4. BPM
-            bpm_item = QTableWidgetItem(bpm_str)
-            bpm_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            bpm_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-            if bpm:
-                bpm_item.setForeground(QBrush(QColor("#38bdf8")))
-                bpm_item.setToolTip(f"{bpm} BPM")
-            else:
-                 bpm_item.setForeground(QBrush(QColor("#475569")))
-            self.track_list.setItem(row, 4, bpm_item)
-            
-            # 5. Key
-            key_item = QTableWidgetItem(key_str)
-            key_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            key_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-            if key:
-                key_item.setForeground(QBrush(QColor("#a78bfa")))
-                key_item.setToolTip(f"Key: {key}")
-            else:
-                key_item.setForeground(QBrush(QColor("#475569")))
-            self.track_list.setItem(row, 5, key_item)
-            
-            # 6. Genre
-            genre_item = QTableWidgetItem(genre_str)
-            genre_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            genre_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-            if genre_str:
-                genre_item.setToolTip(f"Genre: {genre_str}")
-            self.track_list.setItem(row, 6, genre_item)
-            
-            # 7. View icon (Eye)
-            view_item = QTableWidgetItem()
-            # We don't have an eye icon in ICONS yet, use search/folder or add eye. 
-            # I will assume I can add "eye" to icons.py later or reuse search for now.
-            # search icon: checklist-minimalistic... let's use "folder_open" temporarily or "search"
-            # Actually, let's use "folder_open" but maybe tint it differently or "search"
-            # Better to add "eye" to icons.py. For now I'll use "search" (magnifying glass look)
-            view_item.setIcon(get_icon("search", QColor("#facc15"), 14)) # Yellow/Gold
-            view_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            view_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-            view_item.setToolTip("View Project details")
-            self.track_list.setItem(row, 7, view_item)
-            
-            # 8. Add to Playlist icon
-            playlist_item = QTableWidgetItem()
-            playlist_item.setIcon(get_icon("playlist", QColor("#38bdf8"), 14))
-            playlist_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            playlist_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-            playlist_item.setToolTip("Add to Playlist (P)")
-            self.track_list.setItem(row, 8, playlist_item)
-            
-            # 9. Tags icon
-            tags_item = QTableWidgetItem()
-            tags_item.setIcon(get_icon("tag", QColor("#22c55e"), 14))
-            tags_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            tags_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-            tags_item.setToolTip("Edit Tags (T)")
-            self.track_list.setItem(row, 9, tags_item)
-            
-            # 10. Analyze icon
-            analyze_item = QTableWidgetItem()
-            analyze_item.setIcon(get_icon("analyze", QColor("#a855f7"), 14))
-            analyze_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            analyze_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-            analyze_item.setToolTip("Analyze BPM/Key (B)")
-            self.track_list.setItem(row, 10, analyze_item)
-            
-            # 11. Edit Metadata icon
-            edit_item = QTableWidgetItem()
-            edit_item.setIcon(get_icon("edit", QColor("#64748b"), 14))
-            edit_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            edit_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-            edit_item.setToolTip("Edit Metadata (E)")
-            self.track_list.setItem(row, 11, edit_item)
+            for row, track in enumerate(self.tracks_data):
+                title = track.get('title', 'Unknown')
+                project = track.get('project_name', '')
+                # Use mtime for date added/created
+                date_added = format_smart_date(track.get('mtime', 0))
+                bpm = track.get('bpm_user') or track.get('bpm_detected')
+                key = track.get('key_user') or track.get('key_detected')
+                
+                bpm_str = f"{bpm:.0f}" if bpm else ""
+                key_str = str(key) if key else ""
+                genre_str = track.get('genre') or ""
+                
+                # 0. Icon / Index
+                # If playing, show play icon, else show number or favorite heart?
+                # Let's show heart if favorite, else logic later
+                icon_item = QTableWidgetItem("")
+                if track.get('favorite'):
+                    icon_item.setIcon(get_icon("heart", QColor("#ef4444"), 16))
+                else:
+                    icon_item.setText(str(row + 1))
+                icon_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                icon_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                # Store the track ID in the item data for retrieval after sorting
+                icon_item.setData(Qt.ItemDataRole.UserRole, track.get('id'))
+                self.track_list.setItem(row, 0, icon_item)
+                
+                # 1. Title
+                title_item = QTableWidgetItem(title)
+                title_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                # Store the track ID in all items for easy retrieval
+                title_item.setData(Qt.ItemDataRole.UserRole, track.get('id'))
+                self.track_list.setItem(row, 1, title_item)
+                
+                # 2. Project
+                proj_item = QTableWidgetItem(project)
+                proj_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                # proj_item.setForeground(QBrush(QColor("#94a3b8")))
+                self.track_list.setItem(row, 2, proj_item)
+                
+                # 3. Date
+                date_item = QTableWidgetItem(date_added)
+                date_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                date_item.setForeground(QBrush(QColor("#94a3b8")))
+                # Tooltip for full date
+                full_date = format_timestamp(track.get('mtime', 0))
+                date_item.setToolTip(f"Added: {full_date}")
+                self.track_list.setItem(row, 3, date_item)
+                
+                # 4. BPM
+                bpm_item = QTableWidgetItem(bpm_str)
+                bpm_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                bpm_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                if bpm:
+                    bpm_item.setForeground(QBrush(QColor("#38bdf8")))
+                    bpm_item.setToolTip(f"{bpm} BPM")
+                else:
+                     bpm_item.setForeground(QBrush(QColor("#475569")))
+                self.track_list.setItem(row, 4, bpm_item)
+                
+                # 5. Key
+                key_item = QTableWidgetItem(key_str)
+                key_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                key_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                if key:
+                    key_item.setForeground(QBrush(QColor("#a78bfa")))
+                    key_item.setToolTip(f"Key: {key}")
+                else:
+                    key_item.setForeground(QBrush(QColor("#475569")))
+                self.track_list.setItem(row, 5, key_item)
+                
+                # 6. Genre
+                genre_item = QTableWidgetItem(genre_str)
+                genre_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                genre_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                if genre_str:
+                    genre_item.setToolTip(f"Genre: {genre_str}")
+                self.track_list.setItem(row, 6, genre_item)
+                
+                # 7. Status (Badges)
+                status_widget = StatusBadge()
+                badges = []
+                
+                # State Badge (First and prominent)
+                state = track.get('state')
+                if state:
+                    # Color mapping for states
+                    state_colors = {
+                        'FINISHED': '#22c55e', # Green
+                        'MIXED': '#3b82f6',    # Blue
+                        'READY_TO_MIX': '#6366f1', # Indigo
+                        'DRAFT': '#a855f7',    # Purple
+                        'WIP': '#f59e0b',      # Amber
+                        'IDEA': '#eab308',     # Yellow
+                        'SAMPLE': '#94a3b8',   # Slate
+                        'DEAD': '#475569',     # Dark Slate
+                        'BROKEN': '#ef4444',   # Red
+                        'MISSING_RENDER': '#ef4444',
+                        'ORPHAN_RENDER': '#f97316', # Orange
+                    }
+                    color = state_colors.get(state, '#64748b')
+                    reason = track.get('state_reason', 'Unknown reason')
+                    badges.append({'text': state, 'color': color, 'tooltip': f"State: {state}\nWhy: {reason}"})
+                
+                if track.get('flp_path') and os.path.exists(track.get('flp_path')):
+                    badges.append({'text': 'FLP', 'color': '#22c55e', 'tooltip': 'Has FL Studio Project'})
+                if track.get('stems_dir') and os.path.isdir(track.get('stems_dir')):
+                    count = len([f for f in os.listdir(track.get('stems_dir')) 
+                                if os.path.splitext(f)[1].lower() in AUDIO_EXTENSIONS])
+                    if count > 0:
+                        badges.append({'text': 'STEMS', 'color': '#a855f7', 'tooltip': f'{count} Stems available'})
+                if track.get('backup_dir') and os.path.isdir(track.get('backup_dir')):
+                    badges.append({'text': 'BACKUP', 'color': '#64748b', 'tooltip': 'Has Backups'})
+                
+                status_widget.set_badges(badges)
+                self.track_list.setCellWidget(row, 7, status_widget)
+                
+                # 8. View
+                self._create_action_btn(row, 8, "eye", "#facc15", lambda r: self.show_project_details(r))
+                
+                # 9. Playlist
+                self._create_action_btn(row, 9, "playlist", "#38bdf8", lambda r: self.show_add_to_playlist_row(r))
+                
+                # 10. Tags
+                self._create_action_btn(row, 10, "tag", "#22c55e", lambda r: self.show_tag_editor_row(r))
+                
+                # 11. Analyze
+                self._create_action_btn(row, 11, "analyze", "#a855f7", lambda r: self.analyze_track_row(r))
+                
+                # 12. Edit
+                self._create_action_btn(row, 12, "edit", "#64748b", lambda r: self.edit_metadata_row(r))
+        
+        finally:
+            self.track_list.setSortingEnabled(True)
+            self.track_list.setUpdatesEnabled(True)
         
         self.track_count_label.setText(f"{len(self.tracks_data)} tracks")
+        
+    def _create_action_btn(self, row, col, icon_name, color, callback):
+        """Helper to create an action button in the table."""
+        item = QTableWidgetItem()
+        # Fallback for missing icons
+        if icon_name == "eye": icon_name = "search" 
+        
+        item.setIcon(get_icon(icon_name, QColor(color), 14))
+        item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+        self.track_list.setItem(row, col, item)
+    
+    def on_track_double_clicked_table(self, row, col):
+        """Handle table double click."""
+        # If double clicking an action column, do nothing (single click handles it)
+        if col >= 7: return
+        
+        # Get track ID
+        item = self.track_list.item(row, 0)
+        track_id = item.data(Qt.ItemDataRole.UserRole)
+        self.play_track({'id': track_id})
+
+    def show_project_details(self, row):
+        item = self.track_list.item(row, 0)
+        track_id = item.data(Qt.ItemDataRole.UserRole)
+        self.show_project_drilldown(track_id)
+        
+    def show_add_to_playlist_row(self, row):
+        item = self.track_list.item(row, 0)
+        track_id = item.data(Qt.ItemDataRole.UserRole)
+        # TODO: Implement generic "add to playlist" for ID
+        self.current_track = get_track_by_id(track_id)
+        self.show_add_to_playlist()
+
+    def show_tag_editor_row(self, row):
+        item = self.track_list.item(row, 0)
+        track_id = item.data(Qt.ItemDataRole.UserRole)
+        self.current_track = get_track_by_id(track_id)
+        self.show_tag_editor()
+
+    def analyze_track_row(self, row):
+        item = self.track_list.item(row, 0)
+        track_id = item.data(Qt.ItemDataRole.UserRole)
+        self.current_track = get_track_by_id(track_id)
+        self.analyze_track()
+
+    def edit_metadata_row(self, row):
+        item = self.track_list.item(row, 0)
+        track_id = item.data(Qt.ItemDataRole.UserRole)
+        self.current_track = get_track_by_id(track_id)
+        self.edit_metadata()
         
     def _get_track_from_row(self, row):
         """Get track from visual row (works correctly after sorting).
@@ -1731,20 +1870,20 @@ class MainWindow(QMainWindow):
         self.current_track = track
         
         # Handle action column clicks
-        if col == 7:  # View Project
+        if col == 8:  # View Project
             self.project_panel.set_track(track['id'])
             self.stack.setCurrentIndex(1)
             return
-        elif col == 8:  # Playlist
+        elif col == 9:  # Playlist
             self.show_add_to_playlist()
             return
-        elif col == 9:  # Tags
+        elif col == 10:  # Tags
             self.show_tag_editor()
             return
-        elif col == 10:  # Analyze
+        elif col == 11:  # Analyze
             self.analyze_track()
             return
-        elif col == 11:  # Edit
+        elif col == 12:  # Edit
             self.edit_metadata()
             return
         
@@ -1792,6 +1931,7 @@ class MainWindow(QMainWindow):
         # Collect active filters
         favorites_only = self.chip_fav.isChecked()
         tags = []
+        stages = []
         
         no_bpm = False
         no_key = False
@@ -1809,18 +1949,13 @@ class MainWindow(QMainWindow):
                     no_key = True
                 elif data.startswith("genre:"):
                     tags.append(data.split(":", 1)[1])
-        
-        # Note: search_tracks backend might need updates to handle no_bpm/no_key if not supported
-        # Current search_tracks supports: term, key, tags, favorites_only
-        # We need to handle no_bpm/key. 
-        # If search_tracks doesn't support it, we can filter locally or update search_tracks.
-        # Let's filter locally for now to be safe, or update search_tracks if easy.
-        # Given we have 5000 limit, local filter is fast enough.
+                elif data.startswith("stage:"):
+                    stages.append(data.split(":", 1)[1])
         
         # 1. Base Search
         results = search_tracks(
             term=text,
-            key=None, # Filter selection removed, relying on text or no_key
+            key=None,
             tags=tags if tags else None,
             favorites_only=favorites_only,
         )
@@ -1832,6 +1967,16 @@ class MainWindow(QMainWindow):
                 continue
             if no_key and (t.get('key_user') or t.get('key_detected')):
                 continue
+            
+            if stages:
+                # Track state is in 'state' field (e.g. 'IDEA', 'WIP')
+                # Check if track state matches ANY selected stage
+                track_state = t.get('state', '')
+                if not track_state:
+                    continue # Filter out if empty state when filtering
+                if track_state not in stages:
+                    continue
+            
             final_results.append(t)
             
         self.tracks_data = final_results
@@ -1849,19 +1994,75 @@ class MainWindow(QMainWindow):
         self.current_track = track
         self.play_track(track)
     
-    def update_details_panel(self, track):
-        """Update the details panel with track info."""
-        if not track:
-            self.detail_title.setText("Select a track")
+    def update_details_panel(self, item_data):
+        """Update the details panel with track OR project info."""
+        if not item_data:
+            self.detail_title.setText("Select an item")
             self.detail_project.setText("")
             self.update_detail_buttons(None)
             return
         
-        # Get full track details
-        full_track = get_track_by_id(track['id'])
-        if full_track:
-            track = full_track
-            self.current_track = track
+        # Detect type: Project or Track
+        is_project = 'state' in item_data and 'render_priority_score' in item_data
+        
+        if is_project:
+            self.current_track = None # Deselect track
+            track = None
+            # Map project data to UI fields
+            self.detail_title.setText(item_data.get('name', 'Unknown Project'))
+            self.detail_project.setText(format_smart_date(item_data.get('updated_at', 0))) # Use subtitle for date
+            
+            # Project specific metadata
+            score = item_data.get('render_priority_score', 0)
+            state = item_data.get('state', 'Unknown')
+            
+            # We can repurpose fields or hide/show specific widgets
+            # For simplicity, reuse the grid
+            self.detail_bpm.setText(str(score))
+            # findChild(QLabel, "metadataLabel").setText("SCORE") # Hacky, better to have dedicated func
+            # Let's just set the text labels if we can access them, or just use values
+            # Ideally we refactor details panel to have dynamic rows.
+            # For now: BPM -> Score, Key -> State
+            
+            self.detail_bpm.setText(f"{score}")
+            self.detail_key.setText(state.replace("_", " ").title())
+            
+            # Counts
+            size_kb = item_data.get('flp_size_kb', 0)
+            self.detail_size.setText(f"{size_kb} KB")
+            
+            # Buttons
+            self.btn_play.setEnabled(False) # Can't play abstract project easily
+            self.btn_open_flp.setEnabled(bool(item_data.get('flp_path')))
+            self.btn_open_folder.setEnabled(True)
+            self.btn_favorite.setEnabled(False)
+            self.btn_analyze.setEnabled(False)
+            
+            # Subfolders
+            # We have counts in project data
+            self.btn_samples.setText(f"Samples ({item_data.get('samples_count', 0)})")
+            self.btn_samples.setEnabled(item_data.get('samples_count', 0) > 0)
+            
+            self.btn_stems.setText(f"Stems ({item_data.get('stems_count', 0)})")
+            self.btn_stems.setEnabled(item_data.get('stems_count', 0) > 0)
+            
+            self.btn_backup.setText(f"Backups ({item_data.get('backup_count', 0)})")
+            self.btn_backup.setEnabled(item_data.get('backup_count', 0) > 0)
+            
+            # Store current project path for folder actions
+            # We need to set self.current_track slightly to allow some actions? No.
+            self.current_project_path = item_data.get('path')
+            
+            return
+
+        # It's a Track
+        track = item_data
+        # Get full track details if ID only
+        if 'id' in track and len(track.keys()) < 5:
+             full = get_track_by_id(track['id'])
+             if full: track = full
+        
+        self.current_track = track
         
         # Cover Art
         project_path = track.get('project_path')
@@ -1947,6 +2148,11 @@ class MainWindow(QMainWindow):
         self.notes_edit.setText(track.get('notes') or '')
         self.notes_edit.blockSignals(False)
         
+        # Lyrics
+        self.lyrics_edit.blockSignals(True)
+        self.lyrics_edit.setText(track.get('lyrics') or '')
+        self.lyrics_edit.blockSignals(False)
+        
         # Update buttons
         self.update_detail_buttons(track)
     
@@ -2009,6 +2215,10 @@ class MainWindow(QMainWindow):
         """Open the project folder."""
         if self.current_track and self.current_track.get('project_path'):
             open_folder(self.current_track['project_path'])
+
+    def open_project_folder_path(self, path):
+        """Open project folder by path."""
+        open_folder(path)
     
     def toggle_favorite(self):
         """Toggle favorite status."""
@@ -2147,20 +2357,11 @@ class MainWindow(QMainWindow):
             self.time_current.setText(format_duration(current_seconds))
             
             if duration > 0:
-                # Update slider
-                if not self.progress_slider.isSliderDown():
-                    value = int((pos) * 1000)
-                    self.progress_slider.setValue(value)
-                
                 # Update waveform
                 self.mini_waveform.set_position(pos)
     
-    def seek(self):
-        """Handle slider seek."""
-        value = self.progress_slider.value()
-        if self.player.duration > 0:
-            pos = (value / 1000) * self.player.duration
-            self.player.seek(pos)
+
+
     
     def _on_waveform_seek(self, position):
         """Handle waveform seek."""
@@ -2238,6 +2439,12 @@ class MainWindow(QMainWindow):
         if self.current_track:
             notes = self.notes_edit.toPlainText()
             update_track_metadata(self.current_track['id'], notes=notes)
+            
+    def save_lyrics(self):
+        """Save lyrics for current track."""
+        if self.current_track:
+            lyrics = self.lyrics_edit.toPlainText()
+            update_track_metadata(self.current_track['id'], lyrics=lyrics)
     
     def rescan_library(self):
         """Start library rescan."""
@@ -2330,7 +2537,20 @@ class MainWindow(QMainWindow):
             
             # Update details if different
             # Note: might be redundant if selection triggers detail update, but safer
+            # Update details if different
+            # Note: might be redundant if selection triggers detail update, but safer
             self.update_details_panel(track)
+            
+            # Load waveform for mini player
+            self.mini_waveform.clear_waveform()
+            if track.get('path'):
+                if hasattr(self, '_mini_waveform_thread') and self._mini_waveform_thread:
+                    self._mini_waveform_thread.terminate()
+                    self._mini_waveform_thread = None
+                
+                self._mini_waveform_thread = WaveformThread(track['path'])
+                self._mini_waveform_thread.finished.connect(self._on_mini_waveform_ready)
+                self._mini_waveform_thread.start()
         else:
             self.player_title.setText("No track playing")
             self.player_project.setText("")
@@ -2345,15 +2565,27 @@ class MainWindow(QMainWindow):
             pos = self.player.position
             dur = self.player.duration
             
-            if not self.progress_slider.isSliderDown():
-                self.progress_slider.setValue(int(pos * 1000))
-            
             self.time_current.setText(format_duration(pos * dur))
+            
+            # Update waveforms
+            self.mini_waveform.set_position(pos)
+            
+            if self.project_panel.isVisible() and self.player.current_track:
+                viewed_id = self.project_panel.current_track_id
+                playing_id = self.player.current_track.get('id')
+                if viewed_id == playing_id:
+                     self.project_panel.header.waveform.set_position(pos)
     
-    def seek(self):
-        """Seek to slider position."""
-        pos = self.progress_slider.value() / 1000
-        self.player.seek(pos)
+    def _on_mini_waveform_ready(self, waveform):
+        if waveform:
+            self.mini_waveform.set_waveform(
+                waveform.peaks_min,
+                waveform.peaks_max,
+                waveform.duration
+            )
+
+    def _on_waveform_seek(self, position):
+        self.player.seek(position)
         
     def toggle_shuffle(self):
         """Toggle shuffle mode."""
@@ -2455,45 +2687,58 @@ class MainWindow(QMainWindow):
         """)
         
         # Play
-        play_action = menu.addAction("▶️ Play")
+        play_action = menu.addAction(get_icon("play", QColor("#38bdf8"), 16), "Play")
         play_action.triggered.connect(lambda: self.play_track(track))
         
         menu.addSeparator()
         
         # Favorite
-        fav_text = "💔 Remove Favorite" if track.get('favorite') else "❤️ Add Favorite"
-        fav_action = menu.addAction(fav_text)
+        fav_icon = get_icon("heart", QColor("#ef4444"), 16) if track.get('favorite') else get_icon("heart", QColor("#94a3b8"), 16)
+        fav_text = "Remove Favorite" if track.get('favorite') else "Add Favorite"
+        fav_action = menu.addAction(fav_icon, fav_text)
         fav_action.triggered.connect(self.toggle_favorite)
         
         # Add to playlist submenu
         playlist_menu = AddToPlaylistMenu(self)
         playlist_menu.set_tracks([track['id']])
-        playlist_menu.setTitle("📁 Add to Playlist")
-        menu.addMenu(playlist_menu)
+        playlist_menu = QMenu(menu)
+        playlist_menu.setTitle("Add to Playlist")
+        playlist_menu.setIcon(get_icon("playlist", QColor("#38bdf8"), 16))
+        
+        # Populate playlists
+        # Note: playlists are handled via AddToPlaylistMenu above
+        # Removed self.backend.get_playlists() call as backend is not initialized here
         
         # Tags
-        tags_action = menu.addAction("🏷️ Edit Tags (T)")
+        tags_action = menu.addAction(get_icon("tag", QColor("#94a3b8"), 16), "Edit Tags (T)")
         tags_action.triggered.connect(self.show_tag_editor)
         
         menu.addSeparator()
         
         # Analysis
-        analyze_action = menu.addAction("🎵 Analyze BPM/Key (B)")
+        analyze_action = menu.addAction(get_icon("analyze", QColor("#a855f7"), 16), "Analyze BPM/Key (B)")
         analyze_action.triggered.connect(self.analyze_track)
         
         # Edit metadata
-        edit_action = menu.addAction("✏️ Edit Metadata (E)")
+        edit_action = menu.addAction(get_icon("edit", QColor("#94a3b8"), 16), "Edit Metadata (E)")
         edit_action.triggered.connect(self.edit_metadata)
         
         menu.addSeparator()
         
         # Open actions
-        folder_action = menu.addAction("📂 Open Folder (O)")
+        folder_action = menu.addAction(get_icon("folder_open", QColor("#38bdf8"), 16), "Open Folder (O)")
         folder_action.triggered.connect(self.open_project_folder)
         
         if track.get('flp_path'):
-            flp_action = menu.addAction("🎹 Open FLP")
+            flp_action = menu.addAction(get_icon("fl_studio", None, 16), "Open FLP")
             flp_action.triggered.connect(self.open_flp)
+        
+        menu.addSeparator()
+        
+        # Delete action (danger zone)
+        delete_action = menu.addAction(get_icon("trash", QColor("#ef4444"), 16), "Remove from Library")
+        delete_action.triggered.connect(self.delete_current_track)
+        delete_action.triggered.connect(self.delete_current_track)
         
         menu.exec(self.track_list.mapToGlobal(pos))
     
@@ -2517,6 +2762,173 @@ class MainWindow(QMainWindow):
         
         # Refresh track list
         self.on_search(self.search_input.text())
+
+    def delete_current_track(self):
+        """Remove current track from the library database."""
+        if not self.current_track:
+            return
+        
+        track_id = self.current_track['id']
+        track_title = self.current_track.get('title', 'Unknown')
+        
+        # Confirm deletion
+        reply = QMessageBox.question(
+            self, "Remove Track",
+            f"Remove '{track_title}' from the library?\n\n(This will NOT delete the actual file)",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            # Delete from database
+            execute("DELETE FROM track_tags WHERE track_id = ?", (track_id,))
+            execute("DELETE FROM playlist_tracks WHERE track_id = ?", (track_id,))
+            execute("DELETE FROM tracks WHERE id = ?", (track_id,))
+            
+            # Clear current selection
+            self.current_track = None
+            self.update_details_panel(None)
+            
+            # Refresh list
+            self.on_search(self.search_input.text())
+    
+    def clean_missing_files(self):
+        """Remove all tracks whose files no longer exist."""
+        # Find missing tracks
+        all_tracks = query("SELECT id, path, title FROM tracks")
+        missing = []
+        for t in all_tracks:
+            path = t['path'] if 'path' in t.keys() else None
+            if path and not os.path.exists(path):
+                missing.append(t)
+        
+        if not missing:
+            QMessageBox.information(self, "Clean Library", "No missing files found!")
+            return
+        
+        reply = QMessageBox.question(
+            self, "Clean Library",
+            f"Found {len(missing)} tracks with missing files.\n\nRemove them from the library?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            for t in missing:
+                track_id = t['id']
+                execute("DELETE FROM track_tags WHERE track_id = ?", (track_id,))
+                execute("DELETE FROM playlist_tracks WHERE track_id = ?", (track_id,))
+                execute("DELETE FROM tracks WHERE id = ?", (track_id,))
+            
+            QMessageBox.information(self, "Clean Library", f"Removed {len(missing)} tracks.")
+            self.on_search(self.search_input.text())
+
+    def _create_menu_bar(self):
+        """Create the application menu bar."""
+        menubar = self.menuBar()
+        
+        # Tools Menu
+        tools_menu = menubar.addMenu("Tools")
+        
+        # Analyze Library
+        analyze_action = QAction("Analyze Library (BPM/Key)...", self)
+        analyze_action.triggered.connect(self.show_batch_analysis)
+        tools_menu.addAction(analyze_action)
+        
+        # Clean missing files
+        clean_action = QAction("Clean Missing Files...", self)
+        clean_action.triggered.connect(self.clean_missing_files)
+        tools_menu.addAction(clean_action)
+        
+        tools_menu.addSeparator()
+        
+        # Rescan
+        rescan_action = QAction("Rescan Library", self)
+        rescan_action.triggered.connect(self.rescan_library)
+        tools_menu.addAction(rescan_action)
+        
+    def show_batch_analysis(self):
+        """Show batch analysis dialog for all tracks."""
+        # Get all track IDs
+        rows = query("SELECT id FROM tracks")
+        track_ids = [row['id'] for row in rows]
+        
+        if not track_ids:
+            QMessageBox.information(self, "Analysis", "No tracks found in library.")
+            return
+            
+        BatchAnalysisDialog.analyze_tracks(track_ids, self)
+        
+        # Refresh current view
+        self.on_search(self.search_input.text())
+        if self.current_track:
+            self.update_details_panel(self.current_track)
+
+    def rescan_library(self):
+        """Trigger library rescan."""
+        if self.scanner_thread and self.scanner_thread.isRunning():
+            QMessageBox.information(self, "Scan in Progress", "A library scan is already running.")
+            return
+        
+        # Create and start scanner thread
+        self.scanner_thread = ScannerThread(self)
+        self.scanner_thread.progress.connect(self._on_scan_progress)
+        self.scanner_thread.finished.connect(self._on_scan_finished)
+        self.scanner_thread.error.connect(self._on_scan_error)
+        self.scanner_thread.start()
+        
+        logger.info("Library rescan started")
+    
+    def _on_scan_progress(self, current, total, message):
+        """Handle scan progress updates."""
+        logger.debug(f"Scan progress: {message} ({current}/{total})")
+    
+    def _on_scan_finished(self, result):
+        """Handle scan completion."""
+        logger.info(f"Scan complete: {result.projects_found} projects, {result.tracks_found} tracks")
+        self.load_tracks()
+    
+    def _on_scan_error(self, error_msg):
+        """Handle scan error."""
+        logger.error(f"Scan error: {error_msg}")
+        QMessageBox.warning(self, "Scan Error", error_msg)
+
+    def show_command_palette(self):
+        """Show command palette for quick keyboard navigation."""
+        success, result_type, result_data = CommandPaletteDialog.show_palette(
+            self.tracks_data, self
+        )
+        
+        if not success:
+            return
+        
+        if result_type == "track":
+            # Play the selected track
+            self.current_track = result_data
+            self.play_track(result_data)
+            self.update_details_panel(result_data)
+        elif result_type == "command":
+            # Execute command by ID
+            self._execute_palette_command(result_data)
+    
+    def _execute_palette_command(self, command_id: str):
+        """Execute a command palette command."""
+        commands = {
+            "nav:library": lambda: self.set_page("library"),
+            "nav:favorites": lambda: self.set_page("favorites"),
+            "nav:recent": lambda: self.set_page("recent"),
+            "nav:missing": lambda: self.set_page("missing"),
+            "nav:settings": lambda: self.set_page("settings"),
+            "action:analyze": self.analyze_track,
+            "action:edit": self.edit_metadata,
+            "action:favorite": self.toggle_favorite,
+            "action:open_flp": self.open_flp,
+            "action:open_folder": self.open_project_folder,
+            "action:rescan": self.rescan_library,
+        }
+        
+        if command_id in commands:
+            commands[command_id]()
 
 
 def main():

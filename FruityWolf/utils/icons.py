@@ -13,8 +13,8 @@ class IconManager:
     _instance = None
     
     def __init__(self):
-        # Base path to assets
-        self.assets_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "assets", "FruityWolf_icons")
+        # Base path to assets - now inside the package
+        self.assets_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "resources", "icons")
         self._cache = {}
         
         # Color palette
@@ -26,7 +26,7 @@ class IconManager:
         # Icon mapping
         self.ICONS = {
             "play": "play-circle-svgrepo-com.svg",
-            "pause": "pause-circle-svgrepo-com.svg", # Note: Might need to find this if missing, fallback to play
+            "pause": "pause-circle-svgrepo-com.svg", 
             "next": "skip-next-svgrepo-com.svg",
             "prev": "skip-previous-svgrepo-com.svg",
             "repeat": "repeat-svgrepo-com.svg", 
@@ -39,11 +39,11 @@ class IconManager:
             "add": "add-circle-svgrepo-com.svg",
             "volume": "volume-svgrepo-com.svg",
             "volume_mute": "volume-cross-svgrepo-com.svg",
-            "settings": "settings-svgrepo-com.svg", # Placeholder for settings
+            "settings": "settings-svgrepo-com.svg",
             "trash": "trash-bin-trash-svgrepo-com.svg",
             "waveform": "soundwave-svgrepo-com.svg",
             "fl_studio": "fl-studio-mobile-svgrepo-com.svg",
-            "search": "search-svgrepo-com.svg", # Fallback
+            "search": "search-svgrepo-com.svg",
             "sort_alpha": "sort-by-alphabet-svgrepo-com.svg",
             "sort_time": "sort-by-time-svgrepo-com.svg",
             "analyze": "soundwave-svgrepo-com.svg",
@@ -54,7 +54,6 @@ class IconManager:
             "audio": "music-note-3-svgrepo-com.svg",
             "back": "arrow-left-svgrepo-com.svg",
             "refresh": "restart-svgrepo-com.svg", 
-            "folder_open": "folder-open-svgrepo-com.svg",
             "eye": "eye-svgrepo-com.svg",
             "back-up-database": "back-up-database-svgrepo-com.svg",
             "time-clock": "time-clock-circle-svgrepo-com.svg",
@@ -63,6 +62,7 @@ class IconManager:
             "tuning-2": "tuning-2-svgrepo-com.svg",
             "tuning-3": "tuning-3-svgrepo-com.svg",
             "alert": "alert-circle-svgrepo-com.svg",
+            "music": "music-note-3-svgrepo-com.svg",
         }
 
     @classmethod

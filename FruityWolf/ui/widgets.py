@@ -3,7 +3,7 @@ Custom UI Widgets
 """
 
 from PySide6.QtWidgets import (
-    QWidget, QLabel, QLayout, QSizePolicy, QStyle, QPushButton
+    QWidget, QLabel, QLayout, QSizePolicy, QStyle, QPushButton, QHBoxLayout
 )
 from PySide6.QtCore import Qt, QTimer, QRect, QSize, QPoint
 from PySide6.QtGui import QPainter, QFontMetrics
@@ -180,4 +180,54 @@ class TagChip(QPushButton):
             }}
         """
         self.setStyleSheet(base_style)
+
+
+class StatusBadge(QWidget):
+    """
+    A widget displaying status badges (FLP, Stems, Backup, etc.) 
+    as small pills in a flow layout (horizontal).
+    """
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._layout = QHBoxLayout(self)
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        self._layout.setSpacing(4)
+        self._layout.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        
+    def set_badges(self, badges: list):
+        """
+        Set status badges.
+        
+        Args:
+            badges: List of dicts with 'text', 'color', 'tooltip'
+            Example: [{'text': 'FLP', 'color': '#22c55e', 'tooltip': 'Project file available'}]
+        """
+        # Clear existing
+        while self._layout.count():
+            item = self._layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+                
+        for badge in badges:
+            lbl = QLabel(badge['text'])
+            color = badge.get('color', '#94a3b8')
+            tooltip = badge.get('tooltip', '')
+            
+            lbl.setToolTip(tooltip)
+            # Use semi-transparent background (hex+20 = ~12% alpha) and border
+            lbl.setStyleSheet(f"""
+                QLabel {{
+                    background-color: {color}20; 
+                    color: {color};
+                    border: 1px solid {color}40;
+                    border-radius: 4px;
+                    padding: 2px 6px;
+                    font-size: 10px;
+                    font-weight: bold;
+                }}
+            """)
+            self._layout.addWidget(lbl)
+            
+        self._layout.addStretch()
 

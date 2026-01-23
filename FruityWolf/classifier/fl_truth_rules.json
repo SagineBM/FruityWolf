@@ -1,0 +1,314 @@
+{
+    "version": "1.0.0",
+    "priority": [
+        "USER_OVERRIDE",
+        "SYSTEM_STATES",
+        "RENDER_VALIDATION",
+        "PROOF_STATES",
+        "DURATION_BUCKETS",
+        "MODIFIERS"
+    ],
+    "thresholds": {
+        "min_valid_render_duration_s": 6,
+        "sample_max_s": 15,
+        "idea_max_s": 60,
+        "wip_max_s": 120,
+        "draft_max_s": 240,
+        "song_min_s": 120,
+        "silent_rms_db_threshold": -45,
+        "stems_finished_min_count": 8,
+        "abandoned_days": 180,
+        "dead_days": 365
+    },
+    "keywords": {
+        "downgrade": [
+            "test",
+            "demo",
+            "practice",
+            "try",
+            "idea",
+            "sketch"
+        ],
+        "finished": [
+            "final",
+            "master",
+            "release"
+        ],
+        "mixed": [
+            "mix",
+            "premix"
+        ],
+        "wip": [
+            "wip",
+            "workinprogress"
+        ],
+        "remix": [
+            "remix",
+            "flip"
+        ]
+    },
+    "states": {
+        "system": [
+            "BROKEN",
+            "ORPHAN_RENDER",
+            "MISSING_RENDER"
+        ],
+        "creative": [
+            "SAMPLE",
+            "IDEA",
+            "WIP",
+            "DRAFT",
+            "READY_TO_MIX",
+            "MIXED",
+            "FINISHED",
+            "DEAD"
+        ],
+        "labels": [
+            "MISSING_METADATA",
+            "DEAD_SUSPECT",
+            "REMIX_CANDIDATE",
+            "LOW_CONFIDENCE_BPMKEY"
+        ]
+    },
+    "rules": [
+        {
+            "id": "user_override_dead",
+            "priority_group": "USER_OVERRIDE",
+            "if": {
+                "user_dead": true
+            },
+            "then": {
+                "state": "DEAD",
+                "reason": "User marked as dead"
+            }
+        },
+        {
+            "id": "user_override_state",
+            "priority_group": "USER_OVERRIDE",
+            "if": {
+                "user_state_override": "ANY"
+            },
+            "then": {
+                "state_from": "user_state_override",
+                "reason": "User override"
+            }
+        },
+        {
+            "id": "broken_no_flp_no_render",
+            "priority_group": "SYSTEM_STATES",
+            "if": {
+                "has_flp": false,
+                "has_render": false
+            },
+            "then": {
+                "state": "BROKEN",
+                "reason": "No FLP and no render found"
+            }
+        },
+        {
+            "id": "orphan_render",
+            "priority_group": "SYSTEM_STATES",
+            "if": {
+                "has_flp": false,
+                "has_render": true
+            },
+            "then": {
+                "state": "ORPHAN_RENDER",
+                "reason": "Render exists but FLP missing"
+            }
+        },
+        {
+            "id": "missing_render",
+            "priority_group": "SYSTEM_STATES",
+            "if": {
+                "has_flp": true,
+                "has_render": false
+            },
+            "then": {
+                "state": "MISSING_RENDER",
+                "reason": "FLP exists but render missing"
+            }
+        },
+        {
+            "id": "label_missing_metadata",
+            "priority_group": "SYSTEM_STATES",
+            "if": {
+                "bpm": null,
+                "key": null,
+                "mode": "any_missing"
+            },
+            "then": {
+                "label_add": "MISSING_METADATA",
+                "reason": "BPM or key missing"
+            }
+        },
+        {
+            "id": "invalid_render_too_short",
+            "priority_group": "RENDER_VALIDATION",
+            "if": {
+                "has_render": true,
+                "render_duration_s_lt": "min_valid_render_duration_s"
+            },
+            "then": {
+                "treat_render_as_missing": true,
+                "reason": "Render too short"
+            }
+        },
+        {
+            "id": "invalid_render_silent",
+            "priority_group": "RENDER_VALIDATION",
+            "if": {
+                "has_render": true,
+                "render_rms_db_lt": "silent_rms_db_threshold"
+            },
+            "then": {
+                "treat_render_as_missing": true,
+                "reason": "Render is effectively silent"
+            }
+        },
+        {
+            "id": "proof_finished",
+            "priority_group": "PROOF_STATES",
+            "if": {
+                "has_render_effective": true,
+                "render_duration_s_gte": "song_min_s",
+                "any": [
+                    {
+                        "render_name_contains_any": "keywords.finished"
+                    },
+                    {
+                        "tags_contains": "finished"
+                    },
+                    {
+                        "stems_count_gte": "stems_finished_min_count"
+                    }
+                ]
+            },
+            "then": {
+                "state": "FINISHED",
+                "reason": "Finished proof found"
+            }
+        },
+        {
+            "id": "proof_mixed",
+            "priority_group": "PROOF_STATES",
+            "if": {
+                "has_render_effective": true,
+                "render_name_contains_any": "keywords.mixed",
+                "render_name_not_contains_any": "keywords.finished"
+            },
+            "then": {
+                "state": "MIXED",
+                "reason": "Render indicates mix"
+            }
+        },
+        {
+            "id": "proof_ready_to_mix",
+            "priority_group": "PROOF_STATES",
+            "if": {
+                "has_render_effective": true,
+                "render_duration_s_gte": "song_min_s",
+                "has_stems": true,
+                "tags_not_contains": "mix"
+            },
+            "then": {
+                "state": "READY_TO_MIX",
+                "reason": "Stems present, song-length render"
+            }
+        },
+        {
+            "id": "duration_sample",
+            "priority_group": "DURATION_BUCKETS",
+            "if": {
+                "has_render_effective": true,
+                "render_duration_s_lt": "sample_max_s"
+            },
+            "then": {
+                "state": "SAMPLE",
+                "reason": "Very short render"
+            }
+        },
+        {
+            "id": "duration_idea",
+            "priority_group": "DURATION_BUCKETS",
+            "if": {
+                "has_render_effective": true,
+                "render_duration_s_lt": "idea_max_s"
+            },
+            "then": {
+                "state": "IDEA",
+                "reason": "Short loop render"
+            }
+        },
+        {
+            "id": "duration_wip",
+            "priority_group": "DURATION_BUCKETS",
+            "if": {
+                "has_render_effective": true,
+                "render_duration_s_lt": "wip_max_s"
+            },
+            "then": {
+                "state": "WIP",
+                "reason": "Partial arrangement render"
+            }
+        },
+        {
+            "id": "duration_draft",
+            "priority_group": "DURATION_BUCKETS",
+            "if": {
+                "has_render_effective": true,
+                "render_duration_s_lt": "draft_max_s"
+            },
+            "then": {
+                "state": "DRAFT",
+                "reason": "Draft-length render"
+            }
+        },
+        {
+            "id": "duration_full_draft",
+            "priority_group": "DURATION_BUCKETS",
+            "if": {
+                "has_render_effective": true,
+                "render_duration_s_gte": "draft_max_s"
+            },
+            "then": {
+                "state": "DRAFT",
+                "reason": "Full-length render (default draft)"
+            }
+        },
+        {
+            "id": "modifier_downgrade_testnames",
+            "priority_group": "MODIFIERS",
+            "if": {
+                "project_name_contains_any": "keywords.downgrade"
+            },
+            "then": {
+                "downgrade_state_by": 1,
+                "reason": "Project name suggests test/sketch"
+            }
+        },
+        {
+            "id": "label_remix_candidate",
+            "priority_group": "MODIFIERS",
+            "if": {
+                "tags_contains_any": "keywords.remix"
+            },
+            "then": {
+                "label_add": "REMIX_CANDIDATE",
+                "reason": "Remix tag present"
+            }
+        },
+        {
+            "id": "label_dead_suspect",
+            "priority_group": "MODIFIERS",
+            "if": {
+                "days_since_project_modified_gte": "abandoned_days",
+                "has_render_effective": false
+            },
+            "then": {
+                "label_add": "DEAD_SUSPECT",
+                "reason": "Old project without usable render"
+            }
+        }
+    ]
+}

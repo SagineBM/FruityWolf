@@ -62,17 +62,25 @@ Item {
             
             // Action buttons
             Button {
-                text: "🎹 Open FLP"
+                text: "Open FLP"
                 visible: project && project.flp_path
                 onClicked: {
                     if (project) backend.openFlp(project.flp_path)
                 }
                 
-                contentItem: Text {
-                    text: parent.text
-                    font.pixelSize: 13
-                    font.weight: Font.Bold
-                    color: "#000000"
+                contentItem: RowLayout {
+                    spacing: 8
+                    SvgIcon {
+                        iconName: Icons.flStudio
+                        size: 16
+                        color: "#000000"
+                    }
+                    Text {
+                        text: parent.parent.text
+                        font.pixelSize: 13
+                        font.weight: Font.Bold
+                        color: "#000000"
+                    }
                 }
                 
                 background: Rectangle {
@@ -82,9 +90,30 @@ Item {
             }
             
             Button {
-                text: "📂 Open Folder"
+                text: "Open Folder"
                 onClicked: {
                     if (project) backend.openFolder(project.project_path)
+                }
+
+                contentItem: RowLayout {
+                    spacing: 8
+                    SvgIcon {
+                        iconName: Icons.folderOpen
+                        size: 16
+                        color: Theme.text
+                    }
+                    Text {
+                        text: parent.parent.text
+                        font.pixelSize: 13
+                        color: Theme.text
+                    }
+                }
+                
+                background: Rectangle {
+                    color: parent.hovered ? Theme.surfaceHover : "transparent"
+                    border.width: 1
+                    border.color: Theme.border
+                    radius: 20
                 }
             }
         }
@@ -198,9 +227,9 @@ Item {
                 anchors.rightMargin: 16
                 spacing: 12
                 
-                Text {
-                    text: "▶"
-                    font.pixelSize: 14
+                SvgIcon {
+                    iconName: Icons.play
+                    size: 14
                     color: Theme.accent
                 }
                 
@@ -260,9 +289,10 @@ Item {
                 anchors.rightMargin: 16
                 spacing: 12
                 
-                Text {
-                    text: "📄"
-                    font.pixelSize: 16
+                SvgIcon {
+                    iconName: Icons.music
+                    size: 16
+                    color: Theme.textSecondary
                 }
                 
                 Text {

@@ -14,6 +14,7 @@ from .models import (
 )
 from .backend import Backend
 from .waveform_widget import WaveformWidget, MiniWaveformWidget
+from .widgets import StatusBadge
 from .tag_editor import TagEditorDialog, TagChip, TagChipsContainer
 from .playlist_dialogs import (
     PlaylistEditDialog, AddToPlaylistMenu, 
@@ -25,6 +26,7 @@ from .project_panel import (
 )
 from .analysis_dialog import AnalysisDialog, BatchAnalysisDialog
 from .settings_dialog import SettingsDialog
+from .command_palette import CommandPaletteDialog
 
 __all__ = [
     # Models
@@ -38,7 +40,9 @@ __all__ = [
     'Backend',
     # Widgets
     'WaveformWidget',
+    'WaveformWidget',
     'MiniWaveformWidget',
+    'StatusBadge',
     # Tag Editor
     'TagEditorDialog',
     'TagChip',
@@ -58,6 +62,8 @@ __all__ = [
     'BatchAnalysisDialog',
     # Settings
     'SettingsDialog',
+    # Command Palette
+    'CommandPaletteDialog',
 ]
 
 

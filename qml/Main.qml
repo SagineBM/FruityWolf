@@ -80,6 +80,7 @@ ApplicationWindow {
         function onWaveformReady(path, peaksMin, peaksMax) {
             if (currentTrack && currentTrack.path === path) {
                 waveformView.setPeaks(peaksMin, peaksMax)
+                playerBar.setPeaks(peaksMin, peaksMax)
             }
         }
         

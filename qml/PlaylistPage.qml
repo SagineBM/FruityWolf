@@ -73,10 +73,11 @@ Item {
                 }
                 
                 // Playlist icon for small playlists
-                Text {
+                SvgIcon {
                     anchors.centerIn: parent
-                    text: "📋"
-                    font.pixelSize: 64
+                    iconName: Icons.listMusic
+                    size: 64
+                    color: Qt.rgba(1, 1, 1, 0.3)
                     visible: tracks.length < 4
                 }
             }
@@ -126,10 +127,10 @@ Item {
                         radius: 28
                         color: Theme.accent
                         
-                        Text {
+                        SvgIcon {
                             anchors.centerIn: parent
-                            text: "▶"
-                            font.pixelSize: 24
+                            iconName: Icons.play
+                            size: 24
                             color: "#000000"
                         }
                         
@@ -160,10 +161,11 @@ Item {
                         border.width: 1
                         border.color: Theme.textSecondary
                         
-                        Text {
+                        SvgIcon {
                             anchors.centerIn: parent
-                            text: "🔀"
-                            font.pixelSize: 18
+                            iconName: Icons.shuffle
+                            size: 18
+                            color: Theme.textSecondary
                         }
                         
                         MouseArea {
@@ -412,9 +414,18 @@ Item {
                 
                 Text {
                     anchors.centerIn: parent
-                    text: trackMouseArea.containsMouse ? "▶" : index.toString()
-                    font.pixelSize: trackMouseArea.containsMouse ? 14 : 14
-                    color: trackMouseArea.containsMouse ? Theme.accent : Theme.textMuted
+                    visible: !trackMouseArea.containsMouse
+                    text: index.toString()
+                    font.pixelSize: 14
+                    color: Theme.textMuted
+                }
+                
+                SvgIcon {
+                    anchors.centerIn: parent
+                    visible: trackMouseArea.containsMouse
+                    iconName: Icons.play
+                    size: 14
+                    color: Theme.accent
                 }
             }
             
@@ -466,9 +477,9 @@ Item {
             }
             
             // Remove button
-            Text {
-                text: "✕"
-                font.pixelSize: 14
+            SvgIcon {
+                iconName: Icons.x
+                size: 14
                 color: Theme.textMuted
                 visible: trackMouseArea.containsMouse
                 

@@ -89,9 +89,10 @@ Item {
                                     anchors.fill: parent
                                     anchors.margins: 12
                                     
-                                    Text {
-                                        text: "📁"
-                                        font.pixelSize: 16
+                                    SvgIcon {
+                                        iconName: Icons.folder
+                                        size: 16
+                                        color: Theme.text
                                     }
                                     
                                     Text {

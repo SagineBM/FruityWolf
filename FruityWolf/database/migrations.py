@@ -115,6 +115,65 @@ MIGRATIONS: List[Migration] = [
         DROP TABLE IF EXISTS play_history;
         """
     ),
+    
+    # Migration 5: Add Project State Classification
+    Migration(
+        version=5,
+        description="Add project state classification columns",
+        up_sql="""
+        ALTER TABLE tracks ADD COLUMN state TEXT;
+        ALTER TABLE tracks ADD COLUMN state_reason TEXT;
+        ALTER TABLE tracks ADD COLUMN manual_state TEXT;
+        ALTER TABLE tracks ADD COLUMN labels TEXT;
+        
+        CREATE INDEX IF NOT EXISTS idx_tracks_state ON tracks(state);
+        """,
+        down_sql="""
+        -- SQLite does not support dropping columns easily, so we usually ignore or rebuild
+        -- For safety we assume down migration just ignores them or requires manual handling
+        """
+    ),
+    
+    # Migration 6: Add user_dead column for classifier
+    Migration(
+        version=6,
+        description="Add user_dead column for classifier dead override",
+        up_sql="""
+        ALTER TABLE tracks ADD COLUMN user_dead INTEGER DEFAULT 0;
+        """,
+        down_sql=""
+    ),
+    
+    # Migration 7: Add lyrics column to tracks table
+    Migration(
+        version=7,
+        description="Add lyrics column to tracks table",
+        up_sql="""
+        ALTER TABLE tracks ADD COLUMN lyrics TEXT;
+        """,
+        down_sql=""
+    ),
+
+    # Migration 8: Add project signals and classification
+    Migration(
+        version=8,
+        description="Add project classification signals and score",
+        up_sql="""
+        ALTER TABLE projects ADD COLUMN state TEXT;
+        ALTER TABLE projects ADD COLUMN render_priority_score INTEGER DEFAULT 0;
+        ALTER TABLE projects ADD COLUMN needs_render INTEGER DEFAULT 0;
+        ALTER TABLE projects ADD COLUMN signals TEXT;  -- JSON blob for detailed signals
+        
+        -- Add individual signal columns for easier querying if needed
+        ALTER TABLE projects ADD COLUMN backup_count INTEGER DEFAULT 0;
+        ALTER TABLE projects ADD COLUMN samples_count INTEGER DEFAULT 0;
+        ALTER TABLE projects ADD COLUMN stems_count INTEGER DEFAULT 0;
+        ALTER TABLE projects ADD COLUMN flp_size_kb INTEGER DEFAULT 0;
+        """,
+        down_sql="""
+        -- Cannot drop columns in SQLite easily
+        """
+    ),
 ]
 
 

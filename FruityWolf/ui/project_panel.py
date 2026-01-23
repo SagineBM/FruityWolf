@@ -26,6 +26,8 @@ from PySide6.QtGui import QFont, QColor
 from ..scanner.library_scanner import get_track_by_id, AUDIO_EXTENSIONS
 from ..database import query
 from ..utils import format_file_size, format_timestamp, get_icon
+from .waveform_widget import WaveformWidget
+from ..waveform import WaveformThread
 
 logger = logging.getLogger(__name__)
 
@@ -255,6 +257,7 @@ class ProjectInfoHeader(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.project_data: Optional[Dict] = None
+        self._waveform_thread: Optional[WaveformThread] = None
         self._setup_ui()
     
     def _setup_ui(self):
@@ -319,6 +322,12 @@ class ProjectInfoHeader(QFrame):
         self.stats_label = QLabel("")
         self.stats_label.setObjectName("Subtitle")
         layout.addWidget(self.stats_label)
+        
+        # Waveform
+        self.waveform = WaveformWidget()
+        self.waveform.setFixedHeight(60)
+        self.waveform.hide()
+        layout.addWidget(self.waveform)
     
     def set_project(self, project_data: Dict):
         """Set the project to display."""
@@ -352,9 +361,37 @@ class ProjectInfoHeader(QFrame):
         # Show/hide buttons
         self.open_folder_btn.setVisible(bool(path))
         self.open_flp_btn.setVisible(bool(flp) and os.path.exists(flp))
+        
+        # Load waveform if it's a track
+        self.waveform.hide()
+        self.waveform.clear_waveform()
+        if self._waveform_thread:
+            self._waveform_thread.terminate()
+            self._waveform_thread.wait()
+            self._waveform_thread = None
+            
+        if project_data.get('path') and project_data.get('ext') in AUDIO_EXTENSIONS:
+            self.waveform.show()
+            self._waveform_thread = WaveformThread(project_data['path'])
+            self._waveform_thread.finished.connect(self._on_waveform_ready)
+            self._waveform_thread.start()
+            
+    def _on_waveform_ready(self, waveform):
+        if waveform:
+            self.waveform.set_waveform(
+                waveform.peaks_min,
+                waveform.peaks_max,
+                waveform.duration
+            )
     
     def clear_project(self):
         """Clear the project display."""
+        if self._waveform_thread:
+            self._waveform_thread.terminate()
+            self._waveform_thread = None
+        self.waveform.clear_waveform()
+        self.waveform.hide()
+        
         self.project_data = None
         self.title_label.setText("Select a track")
         self.subtitle_label.setText("")
@@ -435,15 +472,15 @@ class ProjectDrillDownPanel(QFrame):
         
         self.stems_list = FileTableWidget()
         self.stems_list.file_double_clicked.connect(self.track_play_requested)
-        self.tabs.addTab(self.stems_list, get_icon("audio", QColor("#a855f7"), 16), "Stems")
+        self.tabs.addTab(self.stems_list, get_icon("audio", QColor("#38bdf8"), 16), "Stems")
         
         self.samples_list = FileTableWidget()
         self.samples_list.file_double_clicked.connect(self.track_play_requested)
-        self.tabs.addTab(self.samples_list, get_icon("folder_open", QColor("#facc15"), 16), "Samples")
+        self.tabs.addTab(self.samples_list, get_icon("folder_open", QColor("#38bdf8"), 16), "Samples")
         
         self.backups_list = FileTableWidget()
         self.backups_list.file_double_clicked.connect(self._open_backup)
-        self.tabs.addTab(self.backups_list, get_icon("folder_open", QColor("#22c55e"), 16), "Backups")
+        self.tabs.addTab(self.backups_list, get_icon("folder_open", QColor("#38bdf8"), 16), "Backups")
     
     def set_track(self, track_id: int):
         """Load project details for a track."""

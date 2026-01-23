@@ -49,6 +49,17 @@ CREATE TABLE IF NOT EXISTS projects (
     stems_dir TEXT,
     backup_dir TEXT,
     last_scan INTEGER,
+    
+    -- Classification & Signals
+    state TEXT,
+    render_priority_score INTEGER DEFAULT 0,
+    needs_render INTEGER DEFAULT 0,
+    signals TEXT,  -- JSON blob
+    backup_count INTEGER DEFAULT 0,
+    samples_count INTEGER DEFAULT 0,
+    stems_count INTEGER DEFAULT 0,
+    flp_size_kb INTEGER DEFAULT 0,
+    
     created_at INTEGER DEFAULT (strftime('%s', 'now')),
     updated_at INTEGER DEFAULT (strftime('%s', 'now'))
 );

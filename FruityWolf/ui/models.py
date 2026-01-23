@@ -33,6 +33,10 @@ class TrackRoles(IntEnum):
     SamplesDirRole = Qt.ItemDataRole.UserRole + 17
     StemsDirRole = Qt.ItemDataRole.UserRole + 18
     BackupDirRole = Qt.ItemDataRole.UserRole + 19
+    StateRole = Qt.ItemDataRole.UserRole + 20
+    StateReasonRole = Qt.ItemDataRole.UserRole + 21
+    RenderPriorityScoreRole = Qt.ItemDataRole.UserRole + 22
+    NeedsRenderRole = Qt.ItemDataRole.UserRole + 23
 
 
 class TrackListModel(QAbstractListModel):
@@ -71,6 +75,10 @@ class TrackListModel(QAbstractListModel):
             TrackRoles.SamplesDirRole: 'samples_dir',
             TrackRoles.StemsDirRole: 'stems_dir',
             TrackRoles.BackupDirRole: 'backup_dir',
+            TrackRoles.StateRole: 'state',
+            TrackRoles.StateReasonRole: 'state_reason',
+            TrackRoles.RenderPriorityScoreRole: 'render_priority_score',
+            TrackRoles.NeedsRenderRole: 'needs_render',
         }
         
         if role in role_map:
@@ -109,6 +117,10 @@ class TrackListModel(QAbstractListModel):
             TrackRoles.SamplesDirRole: b'samplesDir',
             TrackRoles.StemsDirRole: b'stemsDir',
             TrackRoles.BackupDirRole: b'backupDir',
+            TrackRoles.StateRole: b'state',
+            TrackRoles.StateReasonRole: b'stateReason',
+            TrackRoles.RenderPriorityScoreRole: b'renderPriorityScore',
+            TrackRoles.NeedsRenderRole: b'needsRender',
         }
     
     @Slot(list)

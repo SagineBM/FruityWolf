@@ -12,6 +12,8 @@ from .library_scanner import (
     toggle_favorite,
     get_track_by_id,
     update_track_metadata,
+    get_recently_added_tracks,
+    get_missing_metadata_tracks,
     AUDIO_EXTENSIONS,
 )
 from .playlist_manager import (
@@ -43,6 +45,8 @@ __all__ = [
     'toggle_favorite',
     'get_track_by_id',
     'update_track_metadata',
+    'get_recently_added_tracks',
+    'get_missing_metadata_tracks',
     'AUDIO_EXTENSIONS',
     
     # Playlists

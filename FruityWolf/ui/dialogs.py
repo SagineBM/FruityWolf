@@ -2,17 +2,140 @@
 Dialogs for FL Library Pro
 """
 
+import time
+
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, 
     QDialogButtonBox, QDoubleSpinBox, QComboBox, QFormLayout,
     QTextEdit, QPushButton, QWidget, QScrollArea, QGroupBox,
-    QGridLayout
+    QGridLayout, QFrame
 )
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QTimer
 
 from ..database.tags import get_all_genres, add_tag, get_track_tags
 from ..utils.icons import get_icon
 from .widgets import FlowLayout, TagChip
+
+
+class TapTempoWidget(QFrame):
+    """Widget for tap tempo BPM detection.
+    
+    Users tap the button rhythmically and BPM is calculated
+    from the average interval between taps.
+    """
+    
+    bpm_changed = Signal(float)  # Emitted when BPM is detected
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.tap_times = []
+        self.reset_timer = QTimer(self)
+        self.reset_timer.setSingleShot(True)
+        self.reset_timer.timeout.connect(self._reset_taps)
+        
+        self._setup_ui()
+    
+    def _setup_ui(self):
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        
+        self.tap_btn = QPushButton("TAP")
+        self.tap_btn.setFixedSize(60, 36)
+        self.tap_btn.setStyleSheet("""
+            QPushButton {
+                background: #1e293b;
+                border: 2px solid #334155;
+                border-radius: 8px;
+                color: #94a3b8;
+                font-weight: bold;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                border-color: #38bdf8;
+                color: #f1f5f9;
+            }
+            QPushButton:pressed {
+                background: #38bdf8;
+                color: #0f172a;
+            }
+        """)
+        self.tap_btn.clicked.connect(self._on_tap)
+        layout.addWidget(self.tap_btn)
+        
+        self.bpm_label = QLabel("-- BPM")
+        self.bpm_label.setStyleSheet("color: #64748b; font-size: 11px;")
+        self.bpm_label.setFixedWidth(60)
+        layout.addWidget(self.bpm_label)
+    
+    def _on_tap(self):
+        """Handle tap button press."""
+        now = time.time()
+        self.tap_times.append(now)
+        
+        # Keep only last 8 taps for averaging
+        if len(self.tap_times) > 8:
+            self.tap_times = self.tap_times[-8:]
+        
+        # Calculate BPM if we have at least 2 taps
+        if len(self.tap_times) >= 2:
+            intervals = []
+            for i in range(1, len(self.tap_times)):
+                interval = self.tap_times[i] - self.tap_times[i - 1]
+                # Ignore intervals > 2 seconds (likely a reset)
+                if interval < 2.0:
+                    intervals.append(interval)
+            
+            if intervals:
+                avg_interval = sum(intervals) / len(intervals)
+                if avg_interval > 0:
+                    bpm = 60.0 / avg_interval
+                    # Clamp BPM to reasonable range
+                    bpm = max(40, min(300, bpm))
+                    self.bpm_label.setText(f"{bpm:.0f} BPM")
+                    self.bpm_changed.emit(bpm)
+        
+        # Reset after 3 seconds of no taps
+        self.reset_timer.start(3000)
+        
+        # Visual feedback
+        self.tap_btn.setStyleSheet("""
+            QPushButton {
+                background: #38bdf8;
+                border: 2px solid #38bdf8;
+                border-radius: 8px;
+                color: #0f172a;
+                font-weight: bold;
+                font-size: 12px;
+            }
+        """)
+        QTimer.singleShot(100, self._reset_button_style)
+    
+    def _reset_button_style(self):
+        """Reset button to default style."""
+        self.tap_btn.setStyleSheet("""
+            QPushButton {
+                background: #1e293b;
+                border: 2px solid #334155;
+                border-radius: 8px;
+                color: #94a3b8;
+                font-weight: bold;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                border-color: #38bdf8;
+                color: #f1f5f9;
+            }
+            QPushButton:pressed {
+                background: #38bdf8;
+                color: #0f172a;
+            }
+        """)
+    
+    def _reset_taps(self):
+        """Reset tap history after timeout."""
+        self.tap_times = []
+        self.bpm_label.setText("-- BPM")
 
 class MetadataEditDialog(QDialog):
     """Dialog to edit track metadata."""
@@ -98,6 +221,12 @@ class MetadataEditDialog(QDialog):
         self.bpm_spin.setValue(float(current_bpm))
         bpm_layout.addWidget(bpm_label)
         bpm_layout.addWidget(self.bpm_spin)
+        
+        # Tap Tempo widget
+        self.tap_tempo = TapTempoWidget()
+        self.tap_tempo.bpm_changed.connect(lambda bpm: self.bpm_spin.setValue(bpm))
+        bpm_layout.addWidget(self.tap_tempo)
+        
         bpm_layout.addStretch()
         layout.addLayout(bpm_layout)
         
