@@ -29,9 +29,11 @@ class IconManager:
             "pause": "pause-circle-svgrepo-com.svg", 
             "next": "skip-next-svgrepo-com.svg",
             "prev": "skip-previous-svgrepo-com.svg",
+            "arrow_left": "arrow-left-svgrepo-com.svg",
+            "arrow_right": "arrow-right-svgrepo-com.svg",
             "repeat": "repeat-svgrepo-com.svg", 
             "repeat_one": "repeat-one-svgrepo-com.svg",
-            "library": "checklist-minimalistic-svgrepo-com.svg",
+            "library": "music-library-2-svgrepo-com.svg",
             "playlist": "plaaylist-minimalistic-svgrepo-com.svg",
             "heart": "red-heart-svgrepo-com.svg",
             "folder": "folder-2-svgrepo-com.svg", 
@@ -63,6 +65,7 @@ class IconManager:
             "tuning-3": "tuning-3-svgrepo-com.svg",
             "alert": "alert-circle-svgrepo-com.svg",
             "music": "music-note-3-svgrepo-com.svg",
+            
         }
 
     @classmethod

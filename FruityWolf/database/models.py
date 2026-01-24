@@ -238,9 +238,15 @@ class Database:
             self._connection = sqlite3.connect(
                 str(self.db_path),
                 check_same_thread=False,
-                detect_types=sqlite3.PARSE_DECLTYPES
+                detect_types=sqlite3.PARSE_DECLTYPES,
+                timeout=20.0 # Increase timeout
             )
             self._connection.row_factory = sqlite3.Row
+            
+            # Enable WAL mode for concurrency
+            self._connection.execute("PRAGMA journal_mode=WAL")
+            self._connection.execute("PRAGMA synchronous=NORMAL")
+            
             # Enable foreign keys
             self._connection.execute("PRAGMA foreign_keys = ON")
         return self._connection

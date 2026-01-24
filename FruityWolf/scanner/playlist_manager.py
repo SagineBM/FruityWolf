@@ -162,6 +162,37 @@ def reorder_playlist_track(playlist_id: int, track_id: int, new_position: int):
     )
 
 
+def reorder_playlist_tracks_batch(playlist_id: int, track_ids: List[int]):
+    """
+    Update positions for all tracks in playlist in a single batch.
+    
+    Args:
+        playlist_id: The ID of the playlist.
+        track_ids: List of track IDs in the desired order.
+    """
+    if not track_ids:
+        return
+        
+    db = get_db()
+    
+    # Use a transaction for multiple updates
+    # Or simplified single query if supported (CASE WHEN)
+    # Given sqlite limitation on variables, for large lists we should batch or use executemany
+    
+    query = "UPDATE playlist_tracks SET position = ? WHERE playlist_id = ? AND track_id = ?"
+    params = [(i + 1, playlist_id, tid) for i, tid in enumerate(track_ids)]
+    
+    try:
+        cur = db.connection.cursor()
+        cur.executemany(query, params)
+        db.connection.commit()
+    except Exception as e:
+        db.connection.rollback()
+        logger.error(f"Failed to batch reorder playlist: {e}")
+    finally:
+        cur.close()
+
+
 def export_playlist_m3u(playlist_id: int, output_path: str) -> bool:
     """Export playlist to M3U file."""
     playlist = get_playlist(playlist_id)
@@ -244,3 +275,10 @@ def generate_playlist_cover(playlist_id: int) -> Optional[str]:
     except Exception as e:
         logger.error(f"Failed to generate playlist cover: {e}")
         return None
+
+def get_playlist_cover_path(playlist_id: int) -> Optional[str]:
+    """Get the path to the playlist cover image."""
+    row = query_one("SELECT cover_path FROM playlists WHERE id = ?", (playlist_id,))
+    if row and row['cover_path'] and os.path.exists(row['cover_path']):
+        return row['cover_path']
+    return None

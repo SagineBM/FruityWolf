@@ -26,7 +26,7 @@ def get_cover_art(project_path: str) -> Optional[str]:
             
     return None
 
-def get_placeholder_cover(size: int = 200, seed: str = "") -> QPixmap:
+def get_placeholder_cover(size: int = 200, seed: str = "", is_project: bool = False) -> QPixmap:
     """Generate a placeholder gradient cover."""
     pixmap = QPixmap(size, size)
     pixmap.fill(QColor("#0f172a"))
@@ -38,10 +38,18 @@ def get_placeholder_cover(size: int = 200, seed: str = "") -> QPixmap:
     if seed:
         import hashlib
         h = int(hashlib.md5(seed.encode()).hexdigest(), 16)
-        hue1 = h % 360
-        hue2 = (hue1 + 40) % 360
-        c1 = QColor.fromHsl(hue1, 150, 60)
-        c2 = QColor.fromHsl(hue2, 200, 40)
+        if is_project:
+             # Golden/Orange theme for projects
+             hue1 = (h % 60) + 20 # 20-80 (Orange/Yellow)
+             hue2 = (hue1 + 30) % 360
+             c1 = QColor.fromHsl(hue1, 200, 40)
+             c2 = QColor.fromHsl(hue2, 220, 30)
+        else:
+             # Blue/Purple theme for tracks
+             hue1 = (h % 60) + 200 # 200-260 (Blue/Purple)
+             hue2 = (hue1 + 40) % 360
+             c1 = QColor.fromHsl(hue1, 150, 60)
+             c2 = QColor.fromHsl(hue2, 200, 40)
     else:
         c1 = QColor("#38bdf8")
         c2 = QColor("#334155")
@@ -51,8 +59,24 @@ def get_placeholder_cover(size: int = 200, seed: str = "") -> QPixmap:
     
     painter.fillRect(0, 0, size, size, gradient)
     
-    # Draw simple icon or text?
-    # For now just gradient is fine
+    # Draw simple icon
+    from .icons import get_icon
+    icon_name = "folder_open" if is_project else "music"
+    # Actually we don't have 'music' maybe 'audio'
+    if not is_project: icon_name = "audio"
+    
+    # Draw a centered icon (simplified)
+    # We need to import get_icon or use primitives. 
+    # For now just the gradient is enough to fix the crash.
+    # But let's verify if we can draw an icon.
+    # The 'get_icon' returns QIcon, we can paint it.
+    
+    try:
+        from .icons import get_icon
+        icon = get_icon(icon_name, QColor(255, 255, 255, 128), size // 2)
+        icon.paint(painter, size//4, size//4, size//2, size//2)
+    except:
+        pass # Fallback to just gradient
     
     painter.end()
     return pixmap

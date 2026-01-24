@@ -130,11 +130,17 @@ class LibraryScanner(QObject):
                 logger.error(f"Permission denied scanning {root}: {e}")
         
         # Second pass: scan projects
+        last_emit_time = 0
+        
         for idx, proj_path in enumerate(all_projects):
             if self.is_cancelled():
                 break
             
-            self.progress.emit(idx + 1, total_projects, f"Scanning: {proj_path.name}")
+            # Throttle progress (max 20fps = 50ms)
+            current_time = time.time()
+            if current_time - last_emit_time > 0.05 or idx == total_projects - 1:
+                self.progress.emit(idx + 1, total_projects, f"Scanning: {proj_path.name}")
+                last_emit_time = current_time
             
             try:
                 project_result = self._scan_project(proj_path)

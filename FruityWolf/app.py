@@ -39,6 +39,8 @@ from .ui import (
     StatusBadge, CommandPaletteDialog
 )
 from .ui.projects_view import ProjectsView
+from .ui.panels.track_details import TrackDetailsPanel
+from .ui.panels.project_details import ProjectDetailsPanel
 from .player import get_player, PlayerState, RepeatMode
 from .waveform import WaveformThread, get_cached_waveform
 from .analysis import AnalyzerThread, format_bpm, format_key, KEYS
@@ -459,65 +461,88 @@ QDialogButtonBox QPushButton {
 
 
 class QueuePanel(QFrame):
-    """Collapsible queue panel showing upcoming tracks."""
+    """Collapsible queue panel showing 'Now Playing' and 'Next Up'."""
     
-    track_clicked = Signal(dict)  # Emitted when a track is clicked to play
+    track_clicked = Signal(dict)
     
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("queuePanel")
+        
+        # FruityWolf Theme Colors
+        # Background: #111820 (Sidebar/Dark Slate)
+        # Border: #1e293b (Slate Border)
+        # Text: #f1f5f9 (White-ish)
+        # Subtext: #94a3b8 (Slate 400)
+        # Accent: #38bdf8 (Sky 400)
+        
         self.setStyleSheet("""
             QFrame#queuePanel {
-                background-color: #151d28;
+                background-color: #111820;
                 border-top: 1px solid #1e293b;
             }
-            QListWidget#queueList {
+            QLabel#queueHeader {
+                font-size: 16px; 
+                font-weight: bold; 
+                color: #f1f5f9;
+                font-family: 'Segoe UI', 'Inter', sans-serif;
+            }
+            QLabel#sectionHeader {
+                font-size: 11px; 
+                font-weight: bold; 
+                color: #64748b; 
+                text-transform: uppercase;
+                letter-spacing: 1px;
+                margin-top: 16px;
+                margin-bottom: 8px;
+            }
+            QScrollArea {
                 background: transparent;
                 border: none;
             }
-            QListWidget#queueList::item {
-                padding: 8px;
-                border-bottom: 1px solid #1e293b;
-                color: #f1f5f9;
+            QWidget#queueContent {
+                background: transparent;
             }
-            QListWidget#queueList::item:selected {
-                background: rgba(56, 189, 248, 0.15);
+            QScrollBar:vertical {
+                background: #111820;
+                width: 10px;
+                border-radius: 5px;
             }
-            QListWidget#queueList::item:hover {
-                background: #1e2836;
+            QScrollBar::handle:vertical {
+                background: #334155;
+                min-height: 20px;
+                border-radius: 5px;
             }
         """)
         
-        self._current_track = None
-        self._queue = []
+        # Main Layout
+        self.main_layout = QVBoxLayout(self)
+        self.main_layout.setContentsMargins(0, 0, 0, 0)
+        self.main_layout.setSpacing(0)
         
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 12, 16, 12)
-        layout.setSpacing(8)
-        
-        # Header
-        header = QHBoxLayout()
+        # --- HEADER ---
+        header_frame = QFrame()
+        header_frame.setStyleSheet("background: #151d28; border-bottom: 1px solid #1e293b; padding: 12px 16px;")
+        header_layout = QHBoxLayout(header_frame)
+        header_layout.setContentsMargins(0, 0, 0, 0)
         
         title = QLabel("Queue")
-        title.setStyleSheet("font-size: 16px; font-weight: bold; color: #f1f5f9;")
-        header.addWidget(title)
+        title.setObjectName("queueHeader")
+        header_layout.addWidget(title)
         
-        self.count_label = QLabel("0 tracks")
-        self.count_label.setStyleSheet("font-size: 12px; color: #64748b;")
-        header.addWidget(self.count_label)
+        header_layout.addStretch()
         
-        header.addStretch()
-        
-        # Clear button
         self.clear_btn = QPushButton("Clear")
+        self.clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.clear_btn.setStyleSheet("""
             QPushButton {
                 background: transparent;
                 border: 1px solid #334155;
-                border-radius: 4px;
+                border-radius: 12px;
                 color: #94a3b8;
                 padding: 4px 12px;
                 font-size: 11px;
+                font-weight: 600;
             }
             QPushButton:hover {
                 border-color: #ef4444;
@@ -525,118 +550,219 @@ class QueuePanel(QFrame):
             }
         """)
         self.clear_btn.clicked.connect(self._on_clear)
-        header.addWidget(self.clear_btn)
+        header_layout.addWidget(self.clear_btn)
         
-        # Close button
         close_btn = QPushButton("×")
-        close_btn.setFixedSize(24, 24)
+        close_btn.setFixedSize(28, 28)
+        close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         close_btn.setStyleSheet("""
             QPushButton {
                 background: transparent;
                 border: none;
-                color: #94a3b8;
-                font-size: 18px;
-                font-weight: bold;
+                color: #64748b;
+                font-size: 20px;
+                font-weight: 300;
             }
             QPushButton:hover {
                 color: #f1f5f9;
             }
         """)
         close_btn.clicked.connect(lambda: self.setVisible(False))
-        header.addWidget(close_btn)
+        header_layout.addWidget(close_btn)
         
-        layout.addLayout(header)
+        self.main_layout.addWidget(header_frame)
         
-        # Now Playing section
-        self.now_playing = QFrame()
-        self.now_playing.setStyleSheet("""
-            QFrame {
-                background: rgba(56, 189, 248, 0.1);
-                border: 1px solid rgba(56, 189, 248, 0.2);
-                border-radius: 8px;
-                padding: 8px;
-            }
-        """)
-        np_layout = QHBoxLayout(self.now_playing)
-        np_layout.setContentsMargins(12, 8, 12, 8)
+        # --- SCROLL AREA ---
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         
-        np_icon = QLabel("▶")
-        np_icon.setStyleSheet("color: #38bdf8; font-size: 14px;")
-        np_layout.addWidget(np_icon)
+        self.content_widget = QWidget()
+        self.content_widget.setObjectName("queueContent")
+        self.content_layout = QVBoxLayout(self.content_widget)
+        self.content_layout.setContentsMargins(20, 0, 20, 20)
+        self.content_layout.setSpacing(0)
         
-        np_text = QVBoxLayout()
-        self.np_label = QLabel("NOW PLAYING")
-        self.np_label.setStyleSheet("font-size: 10px; font-weight: bold; color: #38bdf8; letter-spacing: 1px;")
-        np_text.addWidget(self.np_label)
+        # 1. NOW PLAYING Section
+        self.np_header = QLabel("NOW PLAYING")
+        self.np_header.setObjectName("sectionHeader")
+        self.content_layout.addWidget(self.np_header)
         
-        self.np_title = QLabel("No track")
-        self.np_title.setStyleSheet("font-size: 13px; color: #f1f5f9;")
-        np_text.addWidget(self.np_title)
+        self.np_container = QVBoxLayout()
+        self.np_container.setSpacing(2)
+        self.content_layout.addLayout(self.np_container)
         
-        np_layout.addLayout(np_text, 1)
-        layout.addWidget(self.now_playing)
+        # 2. NEXT UP Section
+        self.next_header = QLabel("NEXT UP")
+        self.next_header.setObjectName("sectionHeader")
+        self.content_layout.addWidget(self.next_header)
         
-        # Up Next label
-        up_next = QLabel("UP NEXT")
-        up_next.setStyleSheet("font-size: 10px; font-weight: bold; color: #64748b; letter-spacing: 1.5px;")
-        layout.addWidget(up_next)
+        self.next_container = QVBoxLayout()
+        self.next_container.setSpacing(2)
+        self.content_layout.addLayout(self.next_container)
         
-        # Queue list
-        self.queue_list = QListWidget()
-        self.queue_list.setObjectName("queueList")
-        self.queue_list.setMaximumHeight(150)
-        self.queue_list.itemDoubleClicked.connect(self._on_item_clicked)
-        layout.addWidget(self.queue_list)
+        self.content_layout.addStretch() # Push everything up
         
-        # Set fixed height when visible
-        self.setFixedHeight(280)
+        self.scroll_area.setWidget(self.content_widget)
+        self.main_layout.addWidget(self.scroll_area)
+        
+        # State
         self.setVisible(False)
+        self.setFixedHeight(450)
+        self._current_track_widget = None
+        self._queue_widgets = []
     
     def set_current_track(self, track):
         """Set the currently playing track."""
-        self._current_track = track
+        self._clear_layout(self.np_container)
+        self._current_track_widget = None
+        
         if track:
-            self.np_title.setText(track.get('title', 'Unknown'))
+            # Highlighted card style for Now Playing
+            row = self._create_track_row(track, is_now_playing=True)
+            self.np_container.addWidget(row)
+            self._current_track_widget = row
         else:
-            self.np_title.setText("No track")
+             lbl = QLabel("No track playing")
+             lbl.setStyleSheet("color: #64748b; padding: 12px; font-style: italic;")
+             self.np_container.addWidget(lbl)
     
-    def set_queue(self, tracks, current_index=0):
-        """Set the queue tracks (showing tracks after current)."""
-        self._queue = tracks[current_index + 1:current_index + 21] if tracks else []
-        self._update_list()
-    
-    def _update_list(self):
-        """Update the queue list widget."""
-        self.queue_list.clear()
-        # If no tracks found via slicing, but we have a playlist, show it all (fallback)
-        # If no tracks found via slicing, but we have a playlist, show it all (fallback)
-        display_queue = self._queue
+    def set_queue(self, playlist, current_index):
+        """Set the queue tracks (Next Up)."""
+        self._clear_layout(self.next_container)
+        self._queue_widgets = []
         
-        # Fallback: if queue is empty but playlist exists and we are playing, maybe showing something is better?
-        # For now, just rely on valid queue.
+        if not playlist:
+             return
+
+        # Up Next: tracks AFTER the current index
+        next_tracks = playlist[current_index + 1 : current_index + 31] # Show up to 30
         
-        self.count_label.setText(f"{len(display_queue)} tracks")
+        if not next_tracks:
+            lbl = QLabel("End of queue")
+            lbl.setStyleSheet("color: #64748b; padding: 12px; font-style: italic;")
+            self.next_container.addWidget(lbl)
+            return
+            
+        for i, track in enumerate(next_tracks):
+            # Display index relative to the view list (1, 2, 3...)
+            row = self._create_track_row(track, index=i+1)
+            self.next_container.addWidget(row)
+            self._queue_widgets.append(row)
+            
+    def _create_track_row(self, track, is_now_playing=False, index=None):
+        """Create a track row widget using standard theme."""
+        widget = QFrame()
+        widget.setCursor(Qt.CursorShape.PointingHandCursor)
+        widget.setFixedHeight(64 if is_now_playing else 52)
         
-        for i, track in enumerate(display_queue[:15]):  # Show max 15
-            title = track.get('title', 'Unknown')
-            project = track.get('project_name', '')
-            item = QListWidgetItem(f"{i + 1}. {title}")
-            item.setToolTip(f"{title}\n{project}")
-            item.setData(Qt.ItemDataRole.UserRole, track)
-            # Explicitly set color just in case stylesheet fails
-            item.setForeground(QColor("#f1f5f9"))
-            self.queue_list.addItem(item)
-    
-    def _on_item_clicked(self, item):
-        """Handle queue item click."""
-        track = item.data(Qt.ItemDataRole.UserRole)
-        if track:
-            self.track_clicked.emit(track)
+        # Styling
+        if is_now_playing:
+            # Active Card Style
+            bg_normal = "#1e293b" # Slate 800
+            bg_hover = "#243042" # Slightly lighter
+            border = "1px solid #38bdf8" # Sky Blue Border
+            title_color = "#38bdf8" # Sky Blue
+        else:
+            # Standard List Style
+            bg_normal = "transparent"
+            bg_hover = "#1e293b"
+            border = "none" #  "1px solid #1e293b" bottom border handled by layout spacing or inner line? 
+            # Let's add bottom border to widget
+            border = "border-bottom: 1px solid #1e293b"
+            title_color = "#f1f5f9"
+
+        widget.setStyleSheet(f"""
+            QFrame {{
+                background-color: {bg_normal};
+                border-radius: 6px;
+                {border if is_now_playing else 'border-bottom: 1px solid #1e293b; border-radius: 0px;'}
+            }}
+            QFrame:hover {{
+                background-color: {bg_hover};
+            }}
+        """)
+        
+        # Grid Layout for robust alignment
+        layout = QGridLayout(widget)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setColumnStretch(2, 1) # Title/Project stretches
+        
+        # 1. Indicator (Col 0)
+        ind_lbl = QLabel()
+        if is_now_playing:
+             ind_lbl.setText("▶") # Or Pulse Icon
+             ind_lbl.setStyleSheet("color: #38bdf8; font-size: 14px;")
+        else:
+             ind_lbl.setText(str(index) if index else "•")
+             ind_lbl.setStyleSheet("color: #64748b; font-size: 12px; font-weight: 600;")
+        
+        ind_lbl.setFixedWidth(24)
+        ind_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(ind_lbl, 0, 0, 2, 1) # Span 2 rows
+        
+        # 2. Title (Col 2, Row 0)
+        title_text = track.get('title', 'Unknown')
+        title_lbl = QLabel(title_text)
+        title_lbl.setStyleSheet(f"color: {title_color}; font-size: 13px; font-weight: 600; background: transparent; border: none;")
+        # Prevent squeezing -> Elide
+        # QLabel doesn't auto-elide easily in Layouts without help. 
+        # But in Grid with Stretch it should be okay.
+        layout.addWidget(title_lbl, 0, 2)
+        
+        # 3. Project (Col 2, Row 1)
+        project_name = track.get('project_name', 'Unknown Project')
+        proj_lbl = QLabel(project_name)
+        proj_lbl.setStyleSheet("color: #94a3b8; font-size: 11px; background: transparent; border: none;")
+        layout.addWidget(proj_lbl, 1, 2)
+        
+        # 4. BPM/Key (Col 3) - Optional
+        info_text = ""
+        bpm = track.get('bpm_user') or track.get('bpm_detected')
+        key = track.get('key_user') or track.get('key_detected')
+        
+        tags = []
+        if bpm: tags.append(f"{int(bpm)}")
+        if key: tags.append(str(key))
+        
+        if tags:
+            info_lbl = QLabel(" • ".join(tags))
+            info_lbl.setStyleSheet("color: #64748b; font-size: 11px; font-weight: 600; background: transparent; border: none;")
+            info_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            layout.addWidget(info_lbl, 0, 3, 2, 1) # Right side info
+        
+        # 5. Duration (Col 4)
+        duration_sec = track.get('duration_s', 0)
+        dur_str = format_duration(duration_sec) if duration_sec else "--:--"
+        dur_lbl = QLabel(dur_str)
+        dur_lbl.setStyleSheet("color: #64748b; font-size: 11px; font-family: monospace; background: transparent; border: none;")
+        dur_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        layout.addWidget(dur_lbl, 0, 4, 2, 1)
+        
+        # Click Handling
+        def mousePressEvent(e):
+             self.track_clicked.emit(track)
+             
+        widget.mousePressEvent = mousePressEvent
+        
+        return widget
+        
+    def _clear_layout(self, layout):
+        """Clear all items from a layout."""
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+            elif item.layout():
+                self._clear_layout(item.layout())
     
     def _on_clear(self):
-        """Clear the queue."""
-        self._queue = []
-        self._update_list()
+        """Clear the visual queue."""
+        self._clear_layout(self.next_container)
+        lbl = QLabel("Queue cleared")
+        lbl.setStyleSheet("color: #64748b; padding: 12px; font-style: italic;")
+        self.next_container.addWidget(lbl)
 
 
 class MainWindow(QMainWindow):
@@ -787,6 +913,7 @@ class MainWindow(QMainWindow):
         self.player.state_changed.connect(self.on_player_state_changed)
         self.player.track_changed.connect(self.on_track_changed)
         self.player.duration_changed.connect(self.on_duration_changed)
+        self.player.playlist_changed.connect(self.on_playlist_changed)
     
     def setup_ui(self):
         """Setup the main UI."""
@@ -950,17 +1077,20 @@ class MainWindow(QMainWindow):
             btn = QPushButton(text)
             btn.setObjectName("filterChip")
             btn.setCheckable(True)
+            # Pill shape: Height around 28px, radius 14px
+            btn.setFixedHeight(28)
             btn.setStyleSheet("""
                 QPushButton#filterChip {
                     background: rgba(30, 41, 59, 0.5);
                     border: 1px solid #334155;
-                    border-radius: 20px;
-                    padding: 4px 16px;
+                    border-radius: 14px;
+                    padding: 0px 16px;
                     color: #94a3b8;
                     font-size: 11px;
                 }
                 QPushButton#filterChip:hover {
                     border-color: #38bdf8;
+                    background: rgba(30, 41, 59, 0.8);
                     color: #f1f5f9;
                 }
                 QPushButton#filterChip:checked {
@@ -1104,248 +1234,35 @@ class MainWindow(QMainWindow):
         
         content.addWidget(self.stack, 1)  # Stretch
         
-        # === DETAILS PANEL (Right side) - Scrollable ===
-        details_scroll = QScrollArea()
-        details_scroll.setObjectName("detailsScroll")
-        details_scroll.setFixedWidth(340)
-        details_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        details_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        details_scroll.setWidgetResizable(True)
+        # === DETAILS PANEL (Right side) ===
+        self.details_stack = QStackedWidget()
+        self.details_stack.setFixedWidth(320)
         
-        details_container = QWidget()
-        details_layout = QVBoxLayout(details_container)
-        details_layout.setContentsMargins(16, 16, 16, 16)
-        details_layout.setSpacing(12)
+        # 1. Track Panel
+        self.track_panel = TrackDetailsPanel()
+        self.track_panel.edit_clicked.connect(self.edit_metadata)
+        self.track_panel.play_clicked.connect(self.play_track)
+        self.track_panel.favorite_clicked.connect(self.toggle_favorite)
+        self.track_panel.add_playlist_clicked.connect(self.show_add_to_playlist)
+        self.track_panel.open_flp_clicked.connect(self.open_flp)
+        self.track_panel.open_folder_clicked.connect(self.open_project_folder_path)
+        self.details_stack.addWidget(self.track_panel)
         
-        # Track info header
-        self.cover_label = QLabel()
-        self.cover_label.setFixedSize(200, 200)
-        self.cover_label.setStyleSheet("background-color: #0f172a; border-radius: 8px; border: 1px solid #1e293b;")
-        self.cover_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        details_layout.addWidget(self.cover_label, 0, Qt.AlignmentFlag.AlignCenter)
+        # 2. Project Panel
+        self.project_details_panel = ProjectDetailsPanel()
+        self.project_details_panel.open_folder_clicked.connect(self.open_project_folder_path)
+        self.project_details_panel.open_flp_clicked.connect(self.open_flp)
+        self.details_stack.addWidget(self.project_details_panel)
         
-        details_layout.addSpacing(16)
-        
-        self.detail_title = QLabel("Select a track")
-        self.detail_title.setObjectName("trackTitle")
-        self.detail_title.setWordWrap(True)
-        details_layout.addWidget(self.detail_title)
-        
-        self.detail_project = QLabel("")
-        self.detail_project.setObjectName("trackProject")
-        details_layout.addWidget(self.detail_project)
-        
-        details_layout.addSpacing(8)
-        
-        # Metadata grid
-        metadata_group = QGroupBox("METADATA")
-        metadata_layout = QGridLayout(metadata_group)
-        metadata_layout.setSpacing(10)
-        metadata_layout.setContentsMargins(12, 16, 12, 12)
-        
-        # Add Edit button to header
-        header_layout = QHBoxLayout()
-        self.btn_edit = QPushButton("")
-        self.btn_edit.setIcon(get_icon("edit", QColor("#94a3b8"), 16))
-        self.btn_edit.setToolTip("Edit Metadata")
-        self.btn_edit.setFixedSize(24, 24)
-        self.btn_edit.setStyleSheet("background: transparent; border: none;")
-        self.btn_edit.clicked.connect(self.edit_metadata)
-        # We can add this to details_layout or near title. 
-        # Let's put it in the grid for now or make a row for it.
-        # Actually better to put it next to metadata title? GroupBox title logic hard.
-        # Let's just add it as a small button in the group box top right?
-        metadata_layout.addWidget(self.btn_edit, 0, 2) # Top right corner
-        
-        bpm_label = QLabel("BPM")
-        bpm_label.setObjectName("metadataLabel")
-        metadata_layout.addWidget(bpm_label, 0, 0)
-        self.detail_bpm = QLabel("--")
-        self.detail_bpm.setObjectName("metadataValue")
-        self.detail_bpm.setTextInteractionFlags(Qt.TextInteractionFlag.LinksAccessibleByMouse)
-        self.detail_bpm.linkActivated.connect(lambda: self.edit_metadata())
-        metadata_layout.addWidget(self.detail_bpm, 1, 0)
-        
-        key_label = QLabel("KEY")
-        key_label.setObjectName("metadataLabel")
-        metadata_layout.addWidget(key_label, 0, 1)
-        self.detail_key = QLabel("--")
-        self.detail_key.setObjectName("metadataValue")
-        self.detail_key.setTextInteractionFlags(Qt.TextInteractionFlag.LinksAccessibleByMouse)
-        self.detail_key.linkActivated.connect(lambda: self.edit_metadata())
-        metadata_layout.addWidget(self.detail_key, 1, 1)
-        
-        dur_label = QLabel("DURATION")
-        dur_label.setObjectName("metadataLabel")
-        metadata_layout.addWidget(dur_label, 2, 0)
-        self.detail_duration = QLabel("--")
-        self.detail_duration.setObjectName("metadataValue")
-        metadata_layout.addWidget(self.detail_duration, 3, 0)
-        
-        size_label = QLabel("SIZE")
-        size_label.setObjectName("metadataLabel")
-        metadata_layout.addWidget(size_label, 2, 1)
-        self.detail_size = QLabel("--")
-        self.detail_size.setObjectName("metadataValue")
-        metadata_layout.addWidget(self.detail_size, 3, 1)
-
-        genre_label = QLabel("GENRE")
-        genre_label.setObjectName("metadataLabel")
-        metadata_layout.addWidget(genre_label, 4, 0)
-        self.detail_genre = QLabel("--")
-        self.detail_genre.setObjectName("metadataValue")
-        self.detail_genre.setWordWrap(True)
-        metadata_layout.addWidget(self.detail_genre, 5, 0, 1, 2)
-        
-        details_layout.addWidget(metadata_group)
-        
-        # Action buttons
-        actions_group = QGroupBox("ACTIONS")
-        actions_layout = QVBoxLayout(actions_group)
-        actions_layout.setSpacing(8)
-        actions_layout.setContentsMargins(10, 14, 10, 10)
-        
-        # 1. Primary Play Button
-        self.btn_play = QPushButton(" Play Render")
-        self.btn_play.setIcon(get_icon("play", QColor("#ffffff"), 20))
-        self.btn_play.setObjectName("primaryButton")  # Needs styling
-        self.btn_play.setFixedHeight(40)
-        self.btn_play.setStyleSheet("""
-            QPushButton {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #0ea5e9, stop:1 #38bdf8);
-                color: white;
-                border: none;
-                border-radius: 6px;
-                font-weight: bold;
-                font-size: 13px;
-            }
-            QPushButton:hover {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #0284c7, stop:1 #0ea5e9);
-            }
-            QPushButton:pressed {
-                background: #0284c7;
-            }
-        """)
-        self.btn_play.clicked.connect(self.play_current_track)
-        actions_layout.addWidget(self.btn_play)
-        
-        # 2. Project Actions (Row)
-        project_row = QHBoxLayout()
-        project_row.setSpacing(8)
-        
-        self.btn_open_flp = QPushButton(" FLP")
-        self.btn_open_flp.setIcon(get_icon("fl_studio", QColor("#f1f5f9"), 14))
-        self.btn_open_flp.setObjectName("detailButton")
-        self.btn_open_flp.clicked.connect(self.open_flp)
-        project_row.addWidget(self.btn_open_flp, 1)
-        
-        self.btn_open_folder = QPushButton(" Folder")
-        self.btn_open_folder.setIcon(get_icon("folder_open", QColor("#f1f5f9"), 14))
-        self.btn_open_folder.setObjectName("detailButton")
-        self.btn_open_folder.clicked.connect(self.open_project_folder)
-        project_row.addWidget(self.btn_open_folder, 1)
-        
-        actions_layout.addLayout(project_row)
-        
-        # 3. Organize Actions (Row)
-        organize_row = QHBoxLayout()
-        organize_row.setSpacing(8)
-        
-        self.btn_tags = QPushButton(" Tags")
-        self.btn_tags.setIcon(get_icon("tag", QColor("#22c55e"), 14))
-        self.btn_tags.setObjectName("detailButton")
-        self.btn_tags.clicked.connect(self.show_tag_editor)
-        organize_row.addWidget(self.btn_tags, 1)
-        
-        self.btn_analyze = QPushButton(" Analyze")
-        self.btn_analyze.setIcon(get_icon("analyze", QColor("#a855f7"), 14))
-        self.btn_analyze.setObjectName("detailButton")
-        self.btn_analyze.clicked.connect(self.analyze_track)
-        organize_row.addWidget(self.btn_analyze, 1)
-        
-        actions_layout.addLayout(organize_row)
-        
-        # 4. More Actions (Row)
-        more_row = QHBoxLayout()
-        more_row.setSpacing(8)
-        
-        self.btn_favorite = QPushButton(" Fav")
-        self.btn_favorite.setIcon(get_icon("heart", QColor("#f1f5f9"), 14))
-        self.btn_favorite.setObjectName("detailButton")
-        self.btn_favorite.clicked.connect(self.toggle_favorite)
-        more_row.addWidget(self.btn_favorite, 1)
-        
-        self.btn_add_playlist = QPushButton(" Playlist")
-        self.btn_add_playlist.setIcon(get_icon("playlist", QColor("#38bdf8"), 14))
-        self.btn_add_playlist.setObjectName("detailButton")
-        self.btn_add_playlist.clicked.connect(self.show_add_to_playlist)
-        more_row.addWidget(self.btn_add_playlist, 1)
-        
-        actions_layout.addLayout(more_row)
-
-        
-        details_layout.addWidget(actions_group)
-        
-        # Project folders section
-        folders_group = QGroupBox("PROJECT FOLDERS")
-        folders_layout = QVBoxLayout(folders_group)
-        folders_layout.setSpacing(6)
-        folders_layout.setContentsMargins(10, 14, 10, 10)
-        
-        self.btn_samples = QPushButton("Samples (0)")
-        self.btn_samples.setObjectName("detailButton")
-        self.btn_samples.clicked.connect(lambda: self.open_subfolder("samples"))
-        folders_layout.addWidget(self.btn_samples)
-        
-        self.btn_stems = QPushButton("Stems (0)")
-        self.btn_stems.setObjectName("detailButton")
-        self.btn_stems.clicked.connect(lambda: self.open_subfolder("stems"))
-        folders_layout.addWidget(self.btn_stems)
-        
-        self.btn_audio = QPushButton("Audio (0)")
-        self.btn_audio.setObjectName("detailButton")
-        self.btn_audio.clicked.connect(lambda: self.open_subfolder("audio"))
-        folders_layout.addWidget(self.btn_audio)
-        
-        self.btn_backup = QPushButton("Backup (0)")
-        self.btn_backup.setObjectName("detailButton")
-        self.btn_backup.clicked.connect(lambda: self.open_subfolder("backup"))
-        folders_layout.addWidget(self.btn_backup)
-        
-        details_layout.addWidget(folders_group)
-        
-        # Notes section
-        notes_group = QGroupBox("NOTES")
-        notes_layout = QVBoxLayout(notes_group)
-        notes_layout.setContentsMargins(10, 14, 10, 10)
-        
-        self.notes_edit = QTextEdit()
-        self.notes_edit.setPlaceholderText("Add notes...")
-        self.notes_edit.setMaximumHeight(70)
-        self.notes_edit.textChanged.connect(self.save_notes)
-        notes_layout.addWidget(self.notes_edit)
-        
-        details_layout.addWidget(notes_group)
-        
-        # Lyrics section
-        lyrics_group = QGroupBox("LYRICS")
-        lyrics_layout = QVBoxLayout(lyrics_group)
-        lyrics_layout.setContentsMargins(10, 14, 10, 10)
-        
-        self.lyrics_edit = QTextEdit()
-        self.lyrics_edit.setPlaceholderText("Add lyrics...")
-        self.lyrics_edit.setMaximumHeight(150)
-        self.lyrics_edit.textChanged.connect(self.save_lyrics)
-        lyrics_layout.addWidget(self.lyrics_edit)
-        
-        details_layout.addWidget(lyrics_group)
-        
-        details_layout.addStretch()
-        
-        details_scroll.setWidget(details_container)
-        content.addWidget(details_scroll)
+        content.addWidget(self.details_stack)
         
         main_layout.addLayout(content, 1)
+
+        # Import locally to avoid circulars if any (though usually top level is fine)
+        from .ui.playlists_view import PlaylistsView
+        self.playlists_view = PlaylistsView()
+        self.playlists_view.play_requested.connect(self.play_playlist)
+        self.stack.addWidget(self.playlists_view) # Index 3
         
         # === QUEUE PANEL ===
         self.queue_panel = QueuePanel()
@@ -1508,8 +1425,7 @@ class MainWindow(QMainWindow):
         # Apply stylesheet
         self.setStyleSheet(DARK_STYLE)
         
-        # Disable buttons initially
-        self.update_detail_buttons(None)
+
     
     def _set_volume(self, value):
         """Set player volume."""
@@ -1542,22 +1458,29 @@ class MainWindow(QMainWindow):
             # Only load if empty to prevent freeze on switch
             if self.track_list.rowCount() == 0:
                 self.load_tracks()
+            self.stack.setCurrentIndex(0) # Explicitly set to library view
+            
         elif page == "projects":
             # ProjectsView handles its own data, we just show it.
             # Only refresh if empty?
-            if self.projects_view.table.rowCount() == 0:
+            if self.projects_view.model.rowCount() == 0:
                 self.projects_view.refresh_data()
             self.stack.setCurrentWidget(self.projects_view)
+            
         elif page == "favorites":
             self.load_favorites()
+            self.stack.setCurrentIndex(0) # Reuse library view for favorites list
+            
         elif page == "settings":
             # Open settings dialog
             SettingsDialog.show_settings(self)
             # Uncheck after dialog closes
             self.nav_settings.setChecked(False)
+            
         elif page == "playlists":
-            # Show playlist manager dialog
-            self.show_playlist_manager()
+            # Full Page Playlists
+            self.playlists_view.refresh()
+            self.stack.setCurrentWidget(self.playlists_view)
         elif page == "recent":
             self.load_recently_added()
             self.stack.setCurrentIndex(0)
@@ -1819,9 +1742,26 @@ class MainWindow(QMainWindow):
     def show_add_to_playlist_row(self, row):
         item = self.track_list.item(row, 0)
         track_id = item.data(Qt.ItemDataRole.UserRole)
-        # TODO: Implement generic "add to playlist" for ID
         self.current_track = get_track_by_id(track_id)
         self.show_add_to_playlist()
+
+    def show_add_to_playlist(self, track=None):
+        """Show menu to add current track(s) to playlist."""
+        if track:
+            self.current_track = track
+            
+        if not self.current_track:
+            return
+            
+        from .ui.playlist_dialogs import AddToPlaylistMenu
+        from PySide6.QtGui import QCursor
+        
+        # Detect if multiple selection? For now just current track.
+        # Ideally we check self.track_list.selectedItems()
+        
+        menu = AddToPlaylistMenu(self)
+        menu.set_tracks([self.current_track['id']])
+        menu.exec(QCursor.pos())
 
     def show_tag_editor_row(self, row):
         item = self.track_list.item(row, 0)
@@ -1997,175 +1937,34 @@ class MainWindow(QMainWindow):
     def update_details_panel(self, item_data):
         """Update the details panel with track OR project info."""
         if not item_data:
-            self.detail_title.setText("Select an item")
-            self.detail_project.setText("")
-            self.update_detail_buttons(None)
+            self.track_panel.clear()
             return
         
         # Detect type: Project or Track
-        is_project = 'state' in item_data and 'render_priority_score' in item_data
+        # Tracks from search_tracks HAVE 'project_id' (joined).
+        # Projects from get_all_projects DO NOT have 'project_id' (they have 'id').
+        # Also tracks have extensions, projects don't.
+        
+        is_project = 'project_id' not in item_data
         
         if is_project:
-            self.current_track = None # Deselect track
-            track = None
-            # Map project data to UI fields
-            self.detail_title.setText(item_data.get('name', 'Unknown Project'))
-            self.detail_project.setText(format_smart_date(item_data.get('updated_at', 0))) # Use subtitle for date
-            
-            # Project specific metadata
-            score = item_data.get('render_priority_score', 0)
-            state = item_data.get('state', 'Unknown')
-            
-            # We can repurpose fields or hide/show specific widgets
-            # For simplicity, reuse the grid
-            self.detail_bpm.setText(str(score))
-            # findChild(QLabel, "metadataLabel").setText("SCORE") # Hacky, better to have dedicated func
-            # Let's just set the text labels if we can access them, or just use values
-            # Ideally we refactor details panel to have dynamic rows.
-            # For now: BPM -> Score, Key -> State
-            
-            self.detail_bpm.setText(f"{score}")
-            self.detail_key.setText(state.replace("_", " ").title())
-            
-            # Counts
-            size_kb = item_data.get('flp_size_kb', 0)
-            self.detail_size.setText(f"{size_kb} KB")
-            
-            # Buttons
-            self.btn_play.setEnabled(False) # Can't play abstract project easily
-            self.btn_open_flp.setEnabled(bool(item_data.get('flp_path')))
-            self.btn_open_folder.setEnabled(True)
-            self.btn_favorite.setEnabled(False)
-            self.btn_analyze.setEnabled(False)
-            
-            # Subfolders
-            # We have counts in project data
-            self.btn_samples.setText(f"Samples ({item_data.get('samples_count', 0)})")
-            self.btn_samples.setEnabled(item_data.get('samples_count', 0) > 0)
-            
-            self.btn_stems.setText(f"Stems ({item_data.get('stems_count', 0)})")
-            self.btn_stems.setEnabled(item_data.get('stems_count', 0) > 0)
-            
-            self.btn_backup.setText(f"Backups ({item_data.get('backup_count', 0)})")
-            self.btn_backup.setEnabled(item_data.get('backup_count', 0) > 0)
-            
-            # Store current project path for folder actions
-            # We need to set self.current_track slightly to allow some actions? No.
+            self.current_track = None 
+            self.project_details_panel.set_project(item_data)
+            self.details_stack.setCurrentWidget(self.project_details_panel)
             self.current_project_path = item_data.get('path')
+        else:
+            # It's a Track
+            track = item_data
+            if 'id' in track and len(track.keys()) < 5:
+                 full = get_track_by_id(track['id'])
+                 if full: track = full
             
-            return
-
-        # It's a Track
-        track = item_data
-        # Get full track details if ID only
-        if 'id' in track and len(track.keys()) < 5:
-             full = get_track_by_id(track['id'])
-             if full: track = full
-        
-        self.current_track = track
-        
-        # Cover Art
-        project_path = track.get('project_path')
-        cover_path = get_cover_art(project_path)
-        if cover_path:
-            # Load cover
-            pixmap = QPixmap(cover_path)
-            self.cover_label.setPixmap(pixmap.scaled(200, 200, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
-        else:
-            # Placeholder
-            self.cover_label.setPixmap(get_placeholder_cover(200, track.get('title', '')))
-
-        # Basic info
-        self.detail_title.setText(track.get('title', 'Unknown'))
-        self.detail_project.setText(track.get('project_name', ''))
-        
-        # Metadata
-        bpm = track.get('bpm_user') or track.get('bpm_detected')
-        key = track.get('key_user') or track.get('key_detected')
-        duration = track.get('duration', 0)
-        size = track.get('file_size', 0)
-        
-        # Helper for quick-fill links
-        def make_link(text_id):
-            return f'<a href="{text_id}" style="color:#38bdf8; text-decoration:none;">+ Add</a>'
-
-        if bpm:
-            self.detail_bpm.setText(format_bpm(bpm))
-        else:
-            self.detail_bpm.setText(make_link("bpm"))
-            
-        if key:
-            self.detail_key.setText(format_key(key))
-        else:
-            self.detail_key.setText(make_link("key"))
-            
-        if duration:
-            self.detail_duration.setText(format_duration(duration))
-        else:
-            self.detail_duration.setText("--") # Duration usually auto-detected, can't manually edit easily yet
-            
-        self.detail_size.setText(format_file_size(size) if size else "--")
-        
-        genre = track.get('genre')
-        if genre:
-            self.detail_genre.setText(genre)
-        else:
-            self.detail_genre.setText(make_link("genre"))
-        
-        # Favorite button
-        if track.get('favorite'):
-            self.btn_favorite.setText("Remove Favorite")
-            self.btn_favorite.setIcon(get_icon("heart", QColor("#ef4444"), 16))
-        else:
-            self.btn_favorite.setText("Add Favorite")
-            self.btn_favorite.setIcon(get_icon("heart", QColor("#94a3b8"), 16))
-        
-        # Count files in subfolders
-        samples_dir = track.get('samples_dir') or ''
-        stems_dir = track.get('stems_dir') or ''
-        audio_dir = track.get('audio_dir') or ''
-        backup_dir = track.get('backup_dir') or ''
-        
-        samples_count = count_files_in_folder(samples_dir, AUDIO_EXTENSIONS) if samples_dir else 0
-        stems_count = count_files_in_folder(stems_dir, AUDIO_EXTENSIONS) if stems_dir else 0
-        audio_count = count_files_in_folder(audio_dir, AUDIO_EXTENSIONS) if audio_dir else 0
-        backup_count = count_files_in_folder(backup_dir, {'.flp'}) if backup_dir else 0
-        
-        self.btn_samples.setText(f"Samples ({samples_count})")
-        self.btn_samples.setEnabled(bool(samples_dir and samples_count > 0))
-        
-        self.btn_stems.setText(f"Stems ({stems_count})")
-        self.btn_stems.setEnabled(bool(stems_dir and stems_count > 0))
-        
-        self.btn_audio.setText(f"Audio ({audio_count})")
-        self.btn_audio.setEnabled(bool(audio_dir and audio_count > 0))
-        
-        self.btn_backup.setText(f"Backup ({backup_count})")
-        self.btn_backup.setEnabled(bool(backup_dir and backup_count > 0))
-        
-        # Notes
-        self.notes_edit.blockSignals(True)
-        self.notes_edit.setText(track.get('notes') or '')
-        self.notes_edit.blockSignals(False)
-        
-        # Lyrics
-        self.lyrics_edit.blockSignals(True)
-        self.lyrics_edit.setText(track.get('lyrics') or '')
-        self.lyrics_edit.blockSignals(False)
+            self.current_track = track
+            self.track_panel.set_track(track)
+            self.details_stack.setCurrentWidget(self.track_panel)
         
         # Update buttons
-        self.update_detail_buttons(track)
-    
-    def update_detail_buttons(self, track):
-        """Enable/disable action buttons based on track."""
-        has_track = track is not None
-        has_flp = bool(has_track and track.get('flp_path'))
-        
-        self.btn_play.setEnabled(bool(has_track))
-        self.btn_open_flp.setEnabled(bool(has_flp))
-        self.btn_open_folder.setEnabled(bool(has_track))
-        self.btn_favorite.setEnabled(bool(has_track))
-        self.btn_analyze.setEnabled(bool(has_track))
+        # self.update_detail_buttons(track) # This call is now commented out or removed if the method is gone
     
     def play_current_track(self):
         """Play the currently selected track."""
@@ -2205,11 +2004,19 @@ class MainWindow(QMainWindow):
                 self.player.play_at_index(i)
                 break
     
-    def open_flp(self):
+    def open_flp(self, track_or_path=None):
         """Open the FLP file in FL Studio."""
-        if self.current_track and self.current_track.get('flp_path'):
+        target = track_or_path or self.current_track
+        
+        path = None
+        if isinstance(target, str):
+            path = target
+        elif isinstance(target, dict):
+            path = target.get('flp_path')
+            
+        if path:
             fl_path = get_setting('fl_studio_path', '')
-            open_fl_studio(self.current_track['flp_path'], fl_path if fl_path else None)
+            open_fl_studio(path, fl_path if fl_path else None)
     
     def open_project_folder(self):
         """Open the project folder."""
@@ -2220,19 +2027,24 @@ class MainWindow(QMainWindow):
         """Open project folder by path."""
         open_folder(path)
     
-    def toggle_favorite(self):
+    def toggle_favorite(self, track: dict = None):
         """Toggle favorite status."""
-        if self.current_track:
-            new_state = toggle_favorite(self.current_track['id'])
-            self.current_track['favorite'] = new_state
+        target_track = track or self.current_track
+        if target_track:
+            new_state = toggle_favorite(target_track['id'])
+            target_track['favorite'] = new_state
             
             # Update UI
-            self.update_details_panel(self.current_track)
+            self.update_details_panel(target_track)
             
             # Update list icon if visible
             # (Requires finding the row, which is expensive, so we just refresh search if needed or rely on next refresh)
             self.on_search(self.search_input.text())
     
+    
+    def on_playlist_changed(self):
+        """Handle playlist changes."""
+        self.queue_panel.set_queue(self.player.playlist, self.player.playlist_index)
     # --- Player Signal Handlers ---
     
     def on_player_state_changed(self, state):
@@ -2249,6 +2061,13 @@ class MainWindow(QMainWindow):
     
     def on_track_changed(self, track):
         """Handle track change."""
+        # Update queue panel first
+        try:
+            self.queue_panel.set_current_track(track)
+            self.queue_panel.set_queue(self.player.playlist, self.player.playlist_index)
+        except Exception as e:
+            logger.error(f"Error updating queue panel: {e}")
+
         if not track:
             self.player_title.setText("No track playing")
             self.player_project.setText("")
@@ -2259,8 +2078,6 @@ class MainWindow(QMainWindow):
             self.player_bpm_label.hide()
             self.player_key_label.hide()
             self.highlight_playing_row(None)
-            self.queue_panel.set_current_track(None)
-            self.queue_panel.set_queue([], 0)
             return
             
         self.player_title.setText(track.get('title', 'Unknown'))
@@ -2283,16 +2100,18 @@ class MainWindow(QMainWindow):
             self.player_key_label.hide()
         
         # Load waveform
-        self.mini_waveform.clear()
-        if track.get('path'):
-            self.mini_waveform.load_waveform(track['path'])
+        try:
+            self.mini_waveform.clear()
+            if track.get('path'):
+                self.mini_waveform.load_waveform(track['path'])
+        except Exception as e:
+            logger.error(f"Error loading waveform: {e}")
             
         # Highlight the playing row in the table
-        self.highlight_playing_row(track.get('id'))
-        
-        # Update queue panel
-        self.queue_panel.set_current_track(track)
-        self.queue_panel.set_queue(self.player.playlist, self.player.playlist_index)
+        try:
+            self.highlight_playing_row(track.get('id'))
+        except Exception as e:
+            logger.error(f"Error highlighting row: {e}")
     
     def highlight_playing_row(self, track_id):
         """Highlight the row of the currently playing track."""
@@ -2615,6 +2434,8 @@ class MainWindow(QMainWindow):
         """Handle genre filter change."""
         self.on_search(self.search_input.text())
         
+
+    
     def edit_metadata(self):
         """Open metadata edit dialog."""
         if not self.current_track:

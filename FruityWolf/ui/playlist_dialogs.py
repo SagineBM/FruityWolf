@@ -603,3 +603,133 @@ class PlaylistPanel(QWidget):
         else:
             QMessageBox.warning(self, "Generation Failed", 
                 "Failed to generate cover art.\nMake sure Pillow is installed.")
+
+
+# =============================================================================
+# Add Tracks Dialog
+# =============================================================================
+
+class AddTracksDialog(QDialog):
+    """Dialog to search and add tracks to a playlist."""
+    
+    tracks_added = Signal()
+    
+    def __init__(self, playlist_id: int, parent=None):
+        super().__init__(parent)
+        self.playlist_id = playlist_id
+        
+        self.setWindowTitle("Add Songs to Playlist")
+        self.resize(600, 500)
+        self.setStyleSheet(DIALOG_STYLE)
+        
+        self._setup_ui()
+        
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+        
+        # Search
+        search_layout = QHBoxLayout()
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Search library...")
+        self.search_input.textChanged.connect(self._on_search)
+        search_layout.addWidget(self.search_input)
+        layout.addLayout(search_layout)
+        
+        # Results List
+        self.list_widget = QListWidget()
+        self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.list_widget.setStyleSheet("""
+            QListWidget {
+                background: #1e2836;
+                border: 1px solid #334155;
+                font-size: 13px;
+            }
+            QListWidget::item {
+                padding: 8px;
+                border-bottom: 1px solid #1e293b;
+            }
+            QListWidget::item:selected {
+                background: #38bdf8;
+                color: #0f172a;
+            }
+        """)
+        layout.addWidget(self.list_widget)
+        
+        # Buttons
+        btn_box = QHBoxLayout()
+        btn_box.addStretch()
+        
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setStyleSheet("""
+            QPushButton {
+                background: #475569;
+                color: white;
+                border: none;
+                border-radius: 6px;
+                padding: 8px 16px;
+            }
+            QPushButton:hover { background: #64748b; }
+        """)
+        cancel_btn.clicked.connect(self.reject)
+        
+        add_btn = QPushButton("Add Selected")
+        add_btn.setStyleSheet("""
+            QPushButton {
+                background: #22c55e;
+                color: white;
+                border: none;
+                border-radius: 6px;
+                padding: 8px 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background: #16a34a; }
+        """)
+        add_btn.clicked.connect(self._add_selected)
+        
+        btn_box.addWidget(cancel_btn)
+        btn_box.addWidget(add_btn)
+        
+        layout.addLayout(btn_box)
+        
+        # Initial Search (show some tracks)
+        self._on_search("")
+        
+    def _on_search(self, text):
+        from ..database import query
+        
+        self.list_widget.clear()
+        
+        if not text:
+            # Show recent or top tracks? limiting to 50
+             sql = "SELECT id, title, path FROM tracks LIMIT 50"
+             params = ()
+        else:
+             sql = "SELECT id, title, path FROM tracks WHERE title LIKE ? OR path LIKE ? LIMIT 50"
+             wildcard = f"%{text}%"
+             params = (wildcard, wildcard)
+             
+        tracks = query(sql, params)
+        
+        for t in tracks:
+            item = QListWidgetItem(t['title'])
+            item.setData(Qt.ItemDataRole.UserRole, t['id'])
+            item.setToolTip(t['path'])
+            self.list_widget.addItem(item)
+            
+    def _add_selected(self):
+        items = self.list_widget.selectedItems()
+        if not items:
+            return
+            
+        count = 0
+        for item in items:
+            tid = item.data(Qt.ItemDataRole.UserRole)
+            if tid:
+                add_track_to_playlist(self.playlist_id, tid)
+                count += 1
+                
+        if count > 0:
+            QMessageBox.information(self, "Added", f"Added {count} tracks to playlist.")
+            self.tracks_added.emit()
+            self.accept()
