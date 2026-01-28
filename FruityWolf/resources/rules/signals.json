@@ -1,0 +1,82 @@
+{
+    "_comment": "Defines all signals used by the classifier. Raw = from FS, Derived = computed.",
+    "raw": {
+        "has_flp": {
+            "type": "bool",
+            "default": false,
+            "desc": "FLP file exists in tree"
+        },
+        "has_render_root": {
+            "type": "bool",
+            "default": false,
+            "desc": "Audio file matching project exists"
+        },
+        "render_duration_s": {
+            "type": "float",
+            "default": 0.0,
+            "desc": "Duration of main render in seconds"
+        },
+        "backup_count": {
+            "type": "int",
+            "default": 0,
+            "desc": "Number of files in Backup folder"
+        },
+        "samples_count": {
+            "type": "int",
+            "default": 0,
+            "desc": "Number of files in Samples folder"
+        },
+        "audio_folder_count": {
+            "type": "int",
+            "default": 0,
+            "desc": "Number of files in Audio folder"
+        },
+        "stems_count": {
+            "type": "int",
+            "default": 0,
+            "desc": "Number of files in Stems folder"
+        },
+        "flp_size_kb": {
+            "type": "int",
+            "default": 0,
+            "desc": "Size of main FLP in KB"
+        },
+        "folder_size_mb": {
+            "type": "float",
+            "default": 0.0,
+            "desc": "Total folder size in MB"
+        },
+        "project_name": {
+            "type": "str",
+            "default": "",
+            "desc": "Name of the project folder"
+        },
+        "user_tags": {
+            "type": "list",
+            "default": [],
+            "desc": "Tags assigned by user"
+        }
+    },
+    "derived": {
+        "project_modified_age_hours": {
+            "type": "float",
+            "default": 999999.0,
+            "desc": "Hours since any file modified"
+        },
+        "backup_latest_age_hours": {
+            "type": "float",
+            "default": 999999.0,
+            "desc": "Hours since newest backup"
+        },
+        "has_only_backup": {
+            "type": "bool",
+            "default": false,
+            "desc": "True if only Backup folder has content"
+        },
+        "is_tiny_render": {
+            "type": "bool",
+            "default": false,
+            "desc": "True if render exists but is < min valid duration"
+        }
+    }
+}

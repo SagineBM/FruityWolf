@@ -1,0 +1,47 @@
+{
+    "_comment": "Maps project states to suggested next actions.",
+    "actions": {
+        "MICRO_IDEA": {
+            "id": "render_preview_30s",
+            "label": "Render 30s Preview",
+            "icon": "render",
+            "desc": "Create a short preview to remember this idea."
+        },
+        "IDEA": {
+            "id": "set_metadata",
+            "label": "Set BPM & Key",
+            "icon": "edit",
+            "desc": "Organize this idea by adding key metadata."
+        },
+        "WIP": {
+            "id": "render_full_preview",
+            "label": "Render Full Preview",
+            "icon": "play_circle",
+            "desc": "Export a full arrangement to listen outside FL."
+        },
+        "PREVIEW_READY": {
+            "id": "export_stems",
+            "label": "Export Stems",
+            "icon": "layers",
+            "desc": "Prepare stems for mixing or collaboration."
+        },
+        "ADVANCED": {
+            "id": "mark_final",
+            "label": "Mark as Final",
+            "icon": "check_circle",
+            "desc": "Lock this project as finished."
+        },
+        "BROKEN_OR_EMPTY": {
+            "id": "check_folder",
+            "label": "Check Folder",
+            "icon": "folder_alert",
+            "desc": "Investigate why this project is empty or broken."
+        },
+        "default": {
+            "id": "open_project",
+            "label": "Open Project",
+            "icon": "folder_open",
+            "desc": "Open in FL Studio."
+        }
+    }
+}

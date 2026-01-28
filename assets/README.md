@@ -1,4 +1,4 @@
-# FL Library Pro - Assets
+# FruityWolf - Assets
 
 This directory contains application assets:
 

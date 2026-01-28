@@ -140,8 +140,8 @@ class CommandPaletteDialog(QDialog):
         self._commands = [
             CommandEntry("nav:library", "Go to Library", "Show all tracks", "library", CommandType.NAVIGATION),
             CommandEntry("nav:favorites", "Go to Favorites", "Show favorite tracks", "heart", CommandType.NAVIGATION),
-            CommandEntry("nav:recent", "Recently Added", "Show newest tracks", "time", CommandType.NAVIGATION),
-            CommandEntry("nav:missing", "Missing Metadata", "Tracks without BPM/Key", "alert", CommandType.NAVIGATION),
+            CommandEntry("nav:projects", "Go to Projects", "Manage project stages", "folder_open", CommandType.NAVIGATION),
+            CommandEntry("nav:overview", "Go to Overview", "Library dashboard", "analyze", CommandType.NAVIGATION),
             CommandEntry("nav:settings", "Settings", "Open settings dialog", "settings", CommandType.NAVIGATION),
             CommandEntry("action:analyze", "Analyze Track", "Detect BPM and Key", "analyze", CommandType.ACTION),
             CommandEntry("action:edit", "Edit Metadata", "Edit track metadata", "edit", CommandType.ACTION),

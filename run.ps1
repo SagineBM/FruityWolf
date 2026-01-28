@@ -1,4 +1,4 @@
-# FL Library Pro - Run Script
+# FruityWolf - Run Script
 # Run this to start the application
 
 # Activate venv if it exists
@@ -14,5 +14,5 @@ if (Test-Path "venv") {
 }
 
 # Run the app
-Write-Host "Starting FL Library Pro..."
+Write-Host "Starting FruityWolf..."
 python -m FruityWolf

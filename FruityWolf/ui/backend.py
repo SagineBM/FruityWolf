@@ -6,13 +6,16 @@ Exposes Python functionality to QML.
 
 import os
 import logging
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal, Slot, Property, QUrl
 from PySide6.QtQml import QmlElement
 
-from ..database import query, execute, get_setting, set_setting, get_app_data_path
+from ..database import query, execute, get_setting, set_setting, get_app_data_path, query_one
+from .jobs import JobManager
+import json
+import time
 from ..scanner import (
     ScannerThread, get_all_tracks, get_favorite_tracks, search_tracks,
     toggle_favorite, get_track_by_id, update_track_metadata, LibraryScanner
@@ -65,6 +68,11 @@ class Backend(QObject):
     # Navigation signals
     navigateTo = Signal(str, 'QVariant')  # page, data
     
+    # Job Signals (Phase 1)
+    jobStarted = Signal(str)
+    jobProgress = Signal(str, int, int)
+    jobFinished = Signal(str, str, list)
+    
     def __init__(self, parent=None):
         super().__init__(parent)
         
@@ -85,6 +93,12 @@ class Backend(QObject):
         # Player
         self._player = get_player()
         self._connect_player_signals()
+        
+        # Jobs (Phase 1)
+        self._job_manager = JobManager(self)
+        self._job_manager.signals.started.connect(self.jobStarted.emit)
+        self._job_manager.signals.progress.connect(self.jobProgress.emit)
+        self._job_manager.signals.finished.connect(self.jobFinished.emit)
         
         # Load initial data
         self._load_tags()
@@ -209,6 +223,62 @@ class Backend(QObject):
         """Handle scan completion."""
         self.scanFinished.emit(result.projects_found, result.tracks_found)
         self.loadTracks()
+        
+    # -------------------------------------------------------------------------
+    # Bulk Operations & Jobs (Phase 1)
+    # -------------------------------------------------------------------------
+    
+    @Slot(list, str, 'QVariant', result=str)
+    def startBulkAction(self, ids: List[int], action: str, value: Any) -> str:
+        """Start a bulk action job on track IDs."""
+        payload = {"action": action, "value": value}
+        return self._job_manager.start_bulk_update(ids, payload)
+        
+    @Slot(str)
+    def cancelJob(self, job_id: str):
+        """Cancel a running job."""
+        self._job_manager.cancel_job(job_id)
+        
+    # -------------------------------------------------------------------------
+    # Phase 1 Core: Project Meta Patching
+    # -------------------------------------------------------------------------
+    
+    @Slot(int, 'QVariant')
+    def updateProjectUserMeta(self, project_id: int, modifications: Dict):
+        """
+        Update project user_meta with Patch Semantics.
+        """
+        # 1. Fetch current meta
+        row = query_one("SELECT user_meta FROM projects WHERE id = ?", (project_id,))
+        if not row:
+            return
+            
+        try:
+            current_json = row['user_meta']
+            meta = json.loads(current_json) if current_json else {}
+        except Exception:
+            meta = {}
+            
+        # 2. Apply patches
+        for key in ["vision", "energy", "moods"]:
+            if key in modifications:
+                meta[key] = modifications[key]
+                
+        if "checklist" in modifications:
+            checklist = meta.get("todo", [])
+            patch = modifications["checklist"]
+            for item in patch.get("add", []):
+                if item not in checklist: checklist.append(item)
+            for item in patch.get("remove", []):
+                if item in checklist: checklist.remove(item)
+            meta["todo"] = checklist
+            
+        # 3. Save
+        new_json = json.dumps(meta)
+        execute(
+            "UPDATE projects SET user_meta = ?, updated_at = strftime('%s', 'now') WHERE id = ?",
+            (new_json, project_id)
+        )
     
     @Slot(str, result=bool)
     def addLibraryRoot(self, path: str) -> bool:
@@ -241,6 +311,36 @@ class Backend(QObject):
             # Find the index of the selected track in the filtered list
             index = next((i for i, t in enumerate(filtered_tracks) if t.get('id') == track_id), 0)
             self._player.set_playlist(filtered_tracks, index)
+    
+    @Slot(int)
+    def playProjectRender(self, project_id: int):
+        """
+        Find the best render for a project and play it.
+        Updates last played timestamps.
+        """
+        # 1. Find the best track (prefer longest duration if multiple)
+        rows = query("""
+            SELECT id, path, duration FROM tracks 
+            WHERE project_id = ? AND ext != '.flp'
+            ORDER BY duration DESC LIMIT 1
+        """, (project_id,))
+        
+        if not rows:
+            logger.warning(f"No renders found for project {project_id}")
+            return
+            
+        track_row = rows[0]
+        track_id = track_row['id']
+        
+        # 2. Play it
+        self.playTrack(track_id)
+        
+        # 3. Update timestamps
+        now = int(time.time())
+        execute("UPDATE projects SET last_played_ts = ?, updated_at = ? WHERE id = ?", (now, now, project_id))
+        execute("UPDATE tracks SET play_count = play_count + 1, last_played = ?, updated_at = ? WHERE id = ?", (now, now, track_id))
+        
+        logger.info(f"Playing project {project_id} render: {track_row['path']}")
     
     @Slot('QVariant')
     def playTrackDict(self, track: dict):

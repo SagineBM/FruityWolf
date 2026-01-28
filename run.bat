@@ -1,5 +1,5 @@
 @echo off
-REM FL Library Pro - Run Script
+REM FruityWolf - Run Script
 REM Run this to start the application
 
 cd /d "%~dp0"
@@ -21,7 +21,7 @@ if errorlevel 1 (
 )
 
 REM Run the app
-echo Starting FL Library Pro...
+echo Starting FruityWolf...
 python -m FruityWolf
 
 pause

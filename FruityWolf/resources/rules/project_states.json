@@ -1,0 +1,142 @@
+{
+    "_comment": "Project Lifecycle States. ORDER MATTERS for priority.",
+    "states": [
+        {
+            "id": "BROKEN_OR_EMPTY",
+            "label": "Broken / Empty",
+            "color": "#ef4444",
+            "conditions": [
+                {
+                    "signal": "has_flp",
+                    "op": "eq",
+                    "value": false
+                },
+                {
+                    "signal": "has_render_root",
+                    "op": "eq",
+                    "value": false
+                },
+                {
+                    "signal": "backup_count",
+                    "op": "eq",
+                    "value": 0
+                }
+            ]
+        },
+        {
+            "id": "MICRO_IDEA",
+            "label": "Micro Idea",
+            "color": "#94a3b8",
+            "conditions": [
+                {
+                    "or": [
+                        {
+                            "and": [
+                                {
+                                    "signal": "has_flp",
+                                    "op": "eq",
+                                    "value": true
+                                },
+                                {
+                                    "signal": "backup_count",
+                                    "op": "eq",
+                                    "value": 0
+                                },
+                                {
+                                    "signal": "samples_count",
+                                    "op": "lte",
+                                    "value": 3
+                                },
+                                {
+                                    "signal": "folder_size_mb",
+                                    "op": "lt",
+                                    "value": 15
+                                }
+                            ]
+                        },
+                        {
+                            "signal": "is_tiny_render",
+                            "op": "eq",
+                            "value": true
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "id": "PREVIEW_READY",
+            "label": "Preview Ready",
+            "color": "#22c55e",
+            "conditions": [
+                {
+                    "signal": "has_render_root",
+                    "op": "eq",
+                    "value": true
+                },
+                {
+                    "signal": "render_duration_s",
+                    "op": "gte",
+                    "value": 20
+                }
+            ]
+        },
+        {
+            "id": "ADVANCED",
+            "label": "Advanced",
+            "color": "#a855f7",
+            "conditions": [
+                {
+                    "or": [
+                        {
+                            "signal": "stems_count",
+                            "op": "gte",
+                            "value": 8
+                        },
+                        {
+                            "signal": "user_tags",
+                            "op": "contains_any",
+                            "value": [
+                                "mix",
+                                "finish",
+                                "final"
+                            ]
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "id": "WIP",
+            "label": "WIP",
+            "color": "#f59e0b",
+            "conditions": [
+                {
+                    "signal": "backup_count",
+                    "op": "gte",
+                    "value": 5
+                },
+                {
+                    "or": [
+                        {
+                            "signal": "samples_count",
+                            "op": "gte",
+                            "value": 15
+                        },
+                        {
+                            "signal": "audio_folder_count",
+                            "op": "gte",
+                            "value": 10
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "id": "IDEA",
+            "label": "Idea",
+            "color": "#38bdf8",
+            "conditions": []
+        }
+    ],
+    "_note": "IDEA is the fallback state if no other state matches but logic implies it is a valid project."
+}

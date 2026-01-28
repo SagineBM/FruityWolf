@@ -351,7 +351,6 @@ class PlaylistDetailWidget(QWidget):
             }
             QPushButton:hover {
                 background-color: #7dd3fc;
-                transform: scale(1.05);
             }
         """)
         self.btn_play.clicked.connect(self._on_play)

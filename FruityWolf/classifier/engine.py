@@ -1,13 +1,18 @@
 import json
 import logging
-import math
-from dataclasses import dataclass
-from typing import Dict, Any, List, Optional
+import hashlib
+import time
+from pathlib import Path
+from dataclasses import dataclass, field
+from typing import Dict, Any, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
+# Constants
+RULES_DIR = Path(__file__).parent.parent / "resources" / "rules"
+
 class ProjectState:
-    # System states
+    # System states - matched to project_states.json IDs for compatibility
     BROKEN_OR_EMPTY = "BROKEN_OR_EMPTY"
     
     # 5 Stages (Evidence-based)
@@ -25,214 +30,253 @@ class ProjectState:
         PREVIEW_READY, 
         ADVANCED
     ]
+    
+    @staticmethod
+    def format_action_id(action_id: str) -> str:
+        if not action_id: return ""
+        return action_id.replace("_", " ").title()
 
 @dataclass
 class ClassificationResult:
-    state: str
-    needs_render: bool
-    render_priority_score: int
-    reasons: List[str]
-    signals: Dict[str, Any]
+    """Full classification result for a project."""
+    state_id: str
+    state_confidence: float
+    state_reasons: List[str]
+    
+    score: int
+    score_breakdown: Dict[str, int]
+    
+    next_action_id: str
+    next_action_meta: Dict[str, Any]
+    next_action_reasons: List[str]
+    
+    signals: Dict[str, Dict[str, Any]]  # { "raw": {}, "derived": {} }
+    
+    ruleset_hash: str
+    classified_at_ts: int = field(default_factory=lambda: int(time.time()))
+    
+    # Backward compatibility properties if needed
+    @property
+    def state(self): return self.state_id
+    
+    @property
+    def needs_render(self): 
+        # Derived from action or state
+        return self.next_action_id in ["render_preview_30s", "render_full_preview"]
+        
+    @property
+    def render_priority_score(self): return self.score
+    
+    @property
+    def reasons(self): return self.state_reasons + self.next_action_reasons
 
 class ProjectClassifier:
     """
-    Evidence-based classifier for FL Studio projects.
-    Derived from user-defined 'Truth Book' rules.
+    Data-driven classifier engine.
+    Loads rules from JSON and evaluates projects against them.
     """
     
-    # Thresholds
-    MIN_VALID_RENDER_DURATION = 20  # seconds
-    MICRO_IDEA_SIZE_MB = 15
-    MICRO_IDEA_SAMPLES = 3
-    SKETCH_SAMPLES_MIN = 5
-    WIP_SAMPLES_MIN = 15
-    WIP_BACKUPS_MIN = 5
-    ADVANCED_STEMS_MIN = 8
-    
-    KEYWORDS_DOWNGRADE = ["test", "practice", "demo", "try", "idea", "sketch"]
-    KEYWORDS_FINISH = ["finish", "render", "wip", "final"]
-    
-    def classify(self, signals: Dict[str, Any]) -> ClassificationResult:
+    def __init__(self):
+        self._rules = {}
+        self._rules_hash = ""
+        self.load_rules()
+        
+    def load_rules(self):
+        """Load all rule JSONs and compute version hash."""
+        try:
+            self._rules = {
+                "signals": self._load_json("signals.json"),
+                "states": self._load_json("project_states.json"),
+                "scoring": self._load_json("scoring_rules.json"),
+                "actions": self._load_json("next_actions.json"),
+            }
+            
+            # Compute hash of all rules combined
+            hasher = hashlib.sha256()
+            for key in sorted(self._rules.keys()):
+                hasher.update(json.dumps(self._rules[key], sort_keys=True).encode('utf-8'))
+            self._rules_hash = hasher.hexdigest()[:16] # Short hash is enough
+            
+            logger.info(f"Rules loaded. Hash: {self._rules_hash}")
+            
+        except Exception as e:
+            logger.error(f"Failed to load rules: {e}")
+            self._rules = {}
+            
+    def _load_json(self, name: str) -> Dict:
+        path = RULES_DIR / name
+        if not path.exists():
+            logger.warning(f"Rule file not found: {path}")
+            return {}
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"Error loading {name}: {e}")
+            return {}
+            
+    @property
+    def rules_hash(self) -> str:
+        return self._rules_hash
+
+    def classify(self, signals_raw: Dict[str, Any], signals_derived: Dict[str, Any]) -> ClassificationResult:
         """
-        Classify a project based on collected signals.
-        
-        Signals expected:
-        - has_flp (bool)
-        - has_render_root (bool)
-        - render_duration_s (float)
-        - backup_count (int)
-        - backup_latest_age_hours (float)
-        - samples_count (int)
-        - audio_folder_count (int)
-        - stems_count (int)
-        - project_modified_age_hours (float)
-        - flp_size_kb (float)
-        - folder_size_mb (float)
-        - has_only_backup (bool)
-        - project_name (str)
-        - tags (list)
+        Classify project using raw and derived signals.
         """
-        reasons = []
+        # 1. Flatten signals for rule evaluation
+        # Priority: Derived overrides Raw (if name collision, though they should be distinct)
+        combined_signals = signals_raw.copy()
+        combined_signals.update(signals_derived)
         
-        # 1. Determine "Needs Render" Status
-        needs_render = self._evaluate_needs_render(signals, reasons)
+        # 2. Determine State
+        state_id, state_reasons = self._evaluate_state(combined_signals)
         
-        # 2. Determine Stage (0-5)
-        state = self._evaluate_stage(signals, reasons)
+        # 3. Calculate Score
+        score, score_breakdown = self._evaluate_score(combined_signals)
         
-        # 3. Calculate Render Priority Score
-        score = self._calculate_render_priority(signals, needs_render, state)
+        # 4. Determine Next Action
+        action_id, action_reasons = self._evaluate_next_action(state_id, combined_signals)
         
         return ClassificationResult(
-            state=state,
-            needs_render=needs_render,
-            render_priority_score=score,
-            reasons=reasons,
-            signals=signals
+            state_id=state_id,
+            state_confidence=1.0, # Deterministic rules = 100% confidence
+            state_reasons=state_reasons,
+            score=score,
+            score_breakdown=score_breakdown,
+            next_action_id=action_id,
+            next_action_meta={}, # Payload for advanced UI
+            next_action_reasons=action_reasons,
+            signals={"raw": signals_raw, "derived": signals_derived},
+            ruleset_hash=self._rules_hash
         )
-
-    def _evaluate_needs_render(self, s: Dict, reasons: List[str]) -> bool:
-        """Evaluate if the project needs a render based on Tier 1 rules."""
-        has_flp = s.get("has_flp", False)
-        has_root_render = s.get("has_render_root", False)
-        duration = s.get("render_duration_s", 0)
-        stems_count = s.get("stems_count", 0)
         
-        # Rule 1: Has usable render => RENDER_OK
-        if has_root_render:
-            if duration >= self.MIN_VALID_RENDER_DURATION:
-                return False  # Does NOT need render
+    def _evaluate_state(self, signals: Dict[str, Any]) -> Tuple[str, List[str]]:
+        """Determine lifecycle state."""
+        states = self._rules.get("states", {}).get("states", [])
+        
+        for state_def in states:
+            state_id = state_def["id"]
+            conditions = state_def.get("conditions", [])
+            
+            # No conditions usually implies a catch-all or default if placed last
+            # In our JSON, IDEA has empty conditions but we rely on loop order.
+            # If empty conditions, does it match always?
+            # Convention: Empty conditions list = MATCH ALL (True)
+            if not conditions:
+                return state_id, ["Matched default state"]
+                
+            # Check conditions
+            if self._check_conditions(conditions, signals):
+                reasons = []
+                for cond in conditions:
+                    if "or" in cond:
+                        reasons.append(f"Matched complex criteria for {state_id}")
+                    elif "and" in cond:
+                        reasons.append(f"Matched complex criteria for {state_id}")
+                    else:
+                        # Human readable signal check
+                        sig = cond.get('signal', '?')
+                        op = cond.get('op', 'eq')
+                        val = cond.get('value', '?')
+                        reasons.append(f"{sig} {op} {val}")
+                return state_id, reasons
+                
+        return "UNKNOWN", ["No state matched"]
+
+    def _evaluate_score(self, signals: Dict[str, Any]) -> Tuple[int, Dict[str, int]]:
+        """Calculate completion score."""
+        rule_def = self._rules.get("scoring", {})
+        score = rule_def.get("base_score", 0)
+        modifiers = rule_def.get("modifiers", [])
+        breakdown = {}
+        
+        for mod in modifiers:
+            if self._check_condition_single(mod["condition"], signals):
+                amount = mod["score"]
+                mod_id = mod["id"]
+                score += amount
+                breakdown[mod_id] = amount
+                
+        # Clamping
+        bounds = rule_def.get("bounds", {"min": 0, "max": 100})
+        score = max(bounds["min"], min(bounds["max"], score))
+        
+        return score, breakdown
+
+    def _evaluate_next_action(self, state_id: str, signals: Dict[str, Any]) -> Tuple[str, List[str]]:
+        """Determine next action based on state."""
+        actions_map = self._rules.get("actions", {}).get("actions", {})
+        
+        # Simple Logic: Map State -> Action directly
+        action_def = actions_map.get(state_id)
+        if not action_def:
+            action_def = actions_map.get("default", {"id": "open_project"})
+            
+        return action_def["id"], [f"Suggested for {state_id}"]
+
+    def _check_conditions(self, conditions: List[Dict], signals: Dict) -> bool:
+        """Check a list of conditions. Returns True if ALL match (AND)."""
+        for cond in conditions:
+            if not self._check_condition_single(cond, signals):
+                return False
+        return True
+
+    def _check_condition_single(self, cond: Dict, signals: Dict) -> bool:
+        """Evaluate a single condition object."""
+        # Logical operators
+        if "and" in cond:
+            return self._check_conditions(cond["and"], signals)
+        if "or" in cond:
+            for sub_cond in cond["or"]:
+                if self._check_condition_single(sub_cond, signals):
+                    return True
+            return False
+        if "not" in cond:
+            return not self._check_condition_single(cond["not"], signals)
+            
+        # Signal comparison
+        sig_name = cond.get("signal")
+        if not sig_name: return False
+        
+        op = cond.get("op", "eq")
+        target_val = cond.get("value")
+        
+        actual_val = signals.get(sig_name)
+        
+        # Defaults if signal missing
+        if actual_val is None:
+            # Try to find default in definitions
+            raw_def = self._rules.get("signals", {}).get("raw", {}).get(sig_name)
+            derived_def = self._rules.get("signals", {}).get("derived", {}).get(sig_name)
+            sig_def = raw_def or derived_def
+            
+            if sig_def:
+                actual_val = sig_def["default"]
             else:
-                reasons.append(f"Render snippet only ({int(duration)}s < {self.MIN_VALID_RENDER_DURATION}s)")
-                return True # Needs FULL render
-        
-        # Rule 2: No root render but FLP exists => NEEDS_RENDER
-        if has_flp and not has_root_render:
-            reasons.append("NLP exists but no root render")
-            return True
+                # Type safe zeros
+                if isinstance(target_val, bool): actual_val = False
+                elif isinstance(target_val, (int, float)): actual_val = 0
+                elif isinstance(target_val, list): actual_val = []
+                else: actual_val = ""
+
+        return self._compare(actual_val, op, target_val)
+
+    def _compare(self, actual: Any, op: str, target: Any) -> bool:
+        try:
+            if op == "eq": return actual == target
+            if op == "neq": return actual != target
+            if op == "gt": return float(actual) > float(target)
+            if op == "gte": return float(actual) >= float(target)
+            if op == "lt": return float(actual) < float(target)
+            if op == "lte": return float(actual) <= float(target)
+            if op == "contains": return target in actual
+            if op == "contains_any":
+                # Intersection of lists
+                if not isinstance(actual, list): return False
+                return bool(set(actual) & set(target))
+            if op == "not_contains": return target not in actual
             
-        # Rule 4: Stems exist but no root render => NEEDS_RENDER
-        if stems_count > 0 and not has_root_render:
-            reasons.append("Has stems but no root preview")
-            return True
-            
+        except Exception as e:
+            # logger.debug(f"Comparison error: {e}")
+            return False
         return False
-
-    def _evaluate_stage(self, s: Dict, reasons: List[str]) -> str:
-        """Determine project stage based on evidence."""
-        has_flp = s.get("has_flp", False)
-        backups = s.get("backup_count", 0)
-        samples = s.get("samples_count", 0)
-        folder_mb = s.get("folder_size_mb", 0)
-        has_only_backup = s.get("has_only_backup", False)
-        proj_age = s.get("project_modified_age_hours", 0)
-        render_duration = s.get("render_duration_s", 0)
-        audio_folder = s.get("audio_folder_count", 0)
-        has_root_render = s.get("has_render_root", False)
-        stems = s.get("stems_count", 0)
-        render_name = s.get("render_name", "").lower() if s.get("has_render_root") else ""
-        
-        # Stage 5: ADVANCED
-        # Trigger: Stems >= 8 OR render name suggests mix/master OR multiple renders (not reliably tracked yet)
-        is_mix_proof = any(x in render_name for x in ["mix", "master", "final", "v2", "v3"])
-        if stems >= self.ADVANCED_STEMS_MIN or is_mix_proof:
-            reasons.append(f"Advanced: {stems} stems or mix proof")
-            return ProjectState.ADVANCED
-            
-        # Stage 4: PREVIEW READY
-        # Trigger: Usable root render exists
-        if has_root_render and render_duration >= self.MIN_VALID_RENDER_DURATION:
-            # reasons.append("Preview Ready: Usable render found")
-            return ProjectState.PREVIEW_READY
-            
-        # Stage 3: WIP ARRANGEMENT
-        # Trigger: Backups >= 5 AND lots of content AND no usable render
-        has_content = samples >= self.WIP_SAMPLES_MIN or audio_folder >= 10
-        if backups >= self.WIP_BACKUPS_MIN and has_content:
-            reasons.append("WIP: Significant work detected (backups/samples)")
-            return ProjectState.WIP
-            
-        # Stage 1: MICRO IDEA (Check before Stage 2 to catch "early" ones)
-        # Trigger: FLP but minimal content OR new only backup OR tiny render
-        is_tiny_render = has_root_render and render_duration < self.MIN_VALID_RENDER_DURATION
-        is_minimal = has_flp and backups == 0 and samples <= self.MICRO_IDEA_SAMPLES and folder_mb < self.MICRO_IDEA_SIZE_MB
-        is_very_new = has_only_backup and proj_age < 24
-        
-        if is_minimal or is_very_new or is_tiny_render:
-            reasons.append("Micro Idea: Minimal evidence found")
-            return ProjectState.MICRO_IDEA
-
-        # Stage 2: IDEA / SKETCH
-        # Trigger: Backups >= 1 AND some content AND no usable render
-        # If we fall through from Stage 3 and it's not Micro, it's likely Stage 2 if it has SOMETHING.
-        has_some_content = samples >= self.SKETCH_SAMPLES_MIN or audio_folder >= 3
-        if backups >= 1 and has_some_content:
-            reasons.append("Idea: Some structures/backups found")
-            return ProjectState.IDEA
-
-        # Default / Fallback
-        if not has_flp and backups == 0 and not has_root_render:
-             return ProjectState.BROKEN_OR_EMPTY
-             
-        # If has FLP but doesn't match above, default to Idea or Micro?
-        # Likely Idea if it didn't match Micro criteria (e.g. > 15MB but < 5 backups)
-        return ProjectState.IDEA
-
-    def _calculate_render_priority(self, s: Dict, needs_render: bool, state: str) -> int:
-        """Calculate Render Priority Score (0-100)."""
-        if not needs_render and state in [ProjectState.PREVIEW_READY, ProjectState.ADVANCED]:
-            # If already has render, priority is low unless user requested update
-            # But the user logic implies this score helps decide WHAT to render.
-            # If it doesn't need render, score should be low?
-            # actually user provided formula: +30 if has_flp and no usable root render
-            pass
-            
-        score = 0
-        has_flp = s.get("has_flp", False)
-        has_root_render = s.get("has_render_root", False)
-        render_duration = s.get("render_duration_s", 0)
-        usable_render = has_root_render and render_duration >= self.MIN_VALID_RENDER_DURATION
-        
-        backups = s.get("backup_count", 0)
-        samples = s.get("samples_count", 0)
-        audio_folder = s.get("audio_folder_count", 0)
-        proj_age = s.get("project_modified_age_hours", 0) # hours
-        proj_name = s.get("project_name", "").lower()
-        folder_mb = s.get("folder_size_mb", 0)
-        tags = s.get("tags", [])
-        
-        # +30 if has_flp and no usable root render
-        if has_flp and not usable_render:
-            score += 30
-            
-        # +15 if backup_count >= 5
-        if backups >= 5:
-            score += 15
-            
-        # +10 if samples_count >= 10
-        if samples >= 10:
-            score += 10
-            
-        # +10 if audio_folder_count >= 5
-        if audio_folder >= 5:
-            score += 10
-            
-        # +20 if project modified in last 7 days (7 * 24 = 168 hours)
-        if proj_age < 168:
-            score += 20
-            
-        # -25 if project name contains: test, practice, demo
-        if any(x in proj_name for x in self.KEYWORDS_DOWNGRADE):
-            score -= 25
-            
-        # -20 if folder is tiny: < 10MB
-        if folder_mb < 10:
-            score -= 20
-            
-        # +20 if user tagged: finish, render, wip
-        # We need to pass tags in signals
-        if any(t in tags for t in self.KEYWORDS_FINISH):
-            score += 20
-            
-        return max(0, min(100, score))
-

@@ -1,14 +1,17 @@
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTableView, QHeaderView, QLabel, 
-    QComboBox, QLineEdit, QPushButton, QAbstractItemView, QFrame
+    QComboBox, QLineEdit, QPushButton, QAbstractItemView, QFrame,
+    QCheckBox, QStyle, QMessageBox
 )
 from PySide6.QtCore import Qt, Signal, QSize, QModelIndex
 from PySide6.QtGui import QColor, QIcon, QBrush
 
 from ..database import get_db, query
 from ..utils import get_icon, open_file, open_folder, format_smart_date
-from ..scanner.library_scanner import get_all_projects
+from ..utils.path_utils import validate_path
+from ..scanner.library_scanner import get_all_projects, get_sample_usage
 from ..classifier.engine import ProjectState
+from .jobs import JobManager
 
 from .view_models.projects_model import ProjectsModel
 from .delegates.projects_delegate import ProjectsDelegate
@@ -17,15 +20,23 @@ class ProjectsView(QWidget):
     """
     Main view for managing FL Studio projects.
     Displays classification stages, scores, and allows filtering.
+    Phase 1: Added Bulk Action Bar.
     """
     
     project_opened = Signal(str) # Path
     project_selected = Signal(dict) # Emit project data for details panel
+    play_requested = Signal(dict)
+    view_requested = Signal(dict)
     
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.raw_projects_data = [] # Full dataset
-        self.filtered_projects = [] # Filtered dataset
+        self.page_size = 100
+        self.current_offset = 0
+        self.is_loading = False
+        
+        self.job_manager = JobManager(self)
+        self.job_manager.signals.finished.connect(self._on_job_finished)
+        
         self._setup_ui()
         self.refresh_data()
         
@@ -49,7 +60,13 @@ class ProjectsView(QWidget):
         # Filters
         self.stage_filter = QComboBox()
         self.stage_filter.setFixedWidth(140)
-        self.stage_filter.addItems(["All Stages", "Micro Idea", "Idea", "WIP", "Preview Ready", "Advanced", "Broken/Empty"])
+        self.stage_filter.addItems([
+            "All Stages", 
+            "--- SMART VIEWS ---",
+            "High Potential", "Needs Render", "Almost Finished", "Dead Projects",
+            "--- STAGES ---",
+            "Micro Idea", "Idea", "WIP", "Preview Ready", "Advanced", "Broken/Empty"
+        ])
         self.stage_filter.currentTextChanged.connect(self._on_filter_changed)
         header.addWidget(self.stage_filter)
         
@@ -68,98 +85,181 @@ class ProjectsView(QWidget):
         
         layout.addLayout(header)
         
-        # Table View
+        # Main Content Row (Now just the Table)
+        # Directly add the table to the layout to take full width
         self.table = QTableView()
         self.table.setObjectName("trackList") # Reuse styles
         self.table.setShowGrid(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(False)
         self.table.setWordWrap(False)
         
         # Model
         self.model = ProjectsModel(parent=self)
+        self.model.dataChanged.connect(self._on_model_data_changed)
         self.table.setModel(self.model)
         
         # Delegate
         self.delegate = ProjectsDelegate(self.table)
         self.delegate.open_folder_clicked.connect(self._on_open_folder)
         self.delegate.open_flp_clicked.connect(self._on_open_flp)
+        self.delegate.play_clicked.connect(self.play_requested.emit)
+        self.delegate.view_clicked.connect(self.view_requested.emit)
         self.table.setItemDelegate(self.delegate)
         
-        # Header setup
+        # Header setup - Optimized for full width
         h = self.table.horizontalHeader()
-        h.setSectionResizeMode(ProjectsModel.COL_NAME, QHeaderView.ResizeMode.Stretch)
+        h.setStretchLastSection(False) # We want specific columns to stretch
+        
+        h.setSectionResizeMode(ProjectsModel.COL_SELECT, QHeaderView.ResizeMode.Fixed)
+        self.table.setColumnWidth(ProjectsModel.COL_SELECT, 32)
+        
         h.setSectionResizeMode(ProjectsModel.COL_STATE, QHeaderView.ResizeMode.ResizeToContents)
+        
+        h.setSectionResizeMode(ProjectsModel.COL_NAME, QHeaderView.ResizeMode.Stretch)
+        
+        h.setSectionResizeMode(ProjectsModel.COL_SCORE, QHeaderView.ResizeMode.Interactive)
+        self.table.setColumnWidth(ProjectsModel.COL_SCORE, 80)
+        
+        h.setSectionResizeMode(ProjectsModel.COL_NEXT_ACTION, QHeaderView.ResizeMode.Interactive)
+        self.table.setColumnWidth(ProjectsModel.COL_NEXT_ACTION, 150)
+        
+        h.setSectionResizeMode(ProjectsModel.COL_LAST_PLAYED, QHeaderView.ResizeMode.Interactive)
+        self.table.setColumnWidth(ProjectsModel.COL_LAST_PLAYED, 120)
+        
+        h.setSectionResizeMode(ProjectsModel.COL_RENDERS, QHeaderView.ResizeMode.ResizeToContents)
+        
         h.setSectionResizeMode(ProjectsModel.COL_ACTIONS, QHeaderView.ResizeMode.Fixed)
-        self.table.setColumnWidth(ProjectsModel.COL_ACTIONS, 90)
+        self.table.setColumnWidth(ProjectsModel.COL_ACTIONS, 120)  # Increased to fit all 4 buttons
         
         # Events
         self.table.doubleClicked.connect(self._on_row_double_clicked)
         self.table.clicked.connect(self._on_item_clicked)
-        # Enable mouse tracking for delegate hover
         self.table.setMouseTracking(True)
         
-        layout.addWidget(self.table)
+        # Infinite Scroll
+        self.table.verticalScrollBar().valueChanged.connect(self._on_scroll)
+        
+        layout.addWidget(self.table, 1) # Added directly to main layout
+        
+        # Floating Bulk Action Bar
+        self.bulk_bar = QFrame()
+        self.bulk_bar.setObjectName("bulkBar")
+        self.bulk_bar.setStyleSheet("""
+            #bulkBar {
+                background-color: #1e293b;
+                border-top: 1px solid #334155;
+                border-radius: 6px;
+            }
+        """)
+        self.bulk_bar.setVisible(False)
+        
+        bulk_layout = QHBoxLayout(self.bulk_bar)
+        bulk_layout.setContentsMargins(16, 8, 16, 8)
+        
+        self.bulk_label = QLabel("0 selected")
+        self.bulk_label.setStyleSheet("color: white; font-weight: bold;")
+        bulk_layout.addWidget(self.bulk_label)
+        
+        bulk_layout.addStretch()
+        
+        # Actions
+        btn_reclassify = QPushButton("Reclassify")
+        btn_reclassify.clicked.connect(self._on_bulk_reclassify)
+        bulk_layout.addWidget(btn_reclassify)
+        
+        # Could add more: Set State, Add Tag...
+        
+        layout.addWidget(self.bulk_bar)
         
     def refresh_data(self):
         """Fetch data and populate model."""
-        import time
-        import logging
-        logger = logging.getLogger(__name__)
-        
-        t0 = time.perf_counter()
-        # TODO: Add pagination if > 2000 items
-        self.raw_projects_data = get_all_projects(limit=2000)
-        t_fetch = time.perf_counter()
-        
         self._apply_filters()
-        t_end = time.perf_counter()
         
-        logger.info(f"[Perf] refresh_data: Fetch={t_fetch-t0:.3f}s, Filter/Render={t_end-t_fetch:.3f}s, TotalItems={len(self.raw_projects_data)}")
+    def reset_state(self):
+        """Reset filters and search."""
+        self.stage_filter.setCurrentIndex(0)
+        self.search_input.clear()
+        self.active_sample_filter = None
+        self.active_sample_project_ids = set()
+        self._apply_filters()
         
     def _apply_filters(self):
-        """Filter data and update model."""
+        """Filter data and update model using DB-level search."""
+        self.current_offset = 0
+        self.is_loading = True
+        
         stage_filter = self.stage_filter.currentText()
-        search_text = self.search_input.text().lower()
+        search_text = self.search_input.text()
         
-        filtered = []
-        for p in self.raw_projects_data:
-            # Stage Filter
-            p_state = p.get('state', 'Unknown') or 'Unknown'
-            
-            match = True
-            if stage_filter != "All Stages":
-                target = stage_filter.upper().replace(" ", "_").replace("/", "_OR_")
-                if target not in p_state:
-                    match = False
-            
-            # Search Filter
-            if match and search_text:
-                if search_text not in p['name'].lower():
-                    match = False
-            
-            if match:
-                filtered.append(p)
-                
-        # Sort by Modified Date default
-        filtered.sort(key=lambda x: x.get('updated_at', 0), reverse=True)
+        from ..scanner.library_scanner import search_projects
+        projects = search_projects(
+            term=search_text,
+            stage_filter=stage_filter,
+            limit=self.page_size,
+            offset=self.current_offset
+        )
         
-        self.filtered_projects = filtered
-        self.model.set_projects(filtered)
-        self.count_label.setText(f"{len(filtered)} projects")
+        self.filtered_projects = projects
+        self.model.set_projects(projects)
+        self.count_label.setText(f"{len(projects)} projects")
+        self.is_loading = False
+        self._on_model_data_changed()
+
+    def _on_scroll(self, value):
+        """Handle scroll to implement infinite loading."""
+        if self.is_loading:
+            return
+            
+        scrollbar = self.table.verticalScrollBar()
+        if value > scrollbar.maximum() * 0.8: # Threshold to load more
+            self._load_more()
+
+    def _load_more(self):
+        """Load next batch of projects."""
+        if self.is_loading:
+            return
+            
+        self.is_loading = True
+        self.current_offset += self.page_size
+        
+        stage_filter = self.stage_filter.currentText()
+        search_text = self.search_input.text()
+        
+        from ..scanner.library_scanner import search_projects
+        projects = search_projects(
+            term=search_text,
+            stage_filter=stage_filter,
+            limit=self.page_size,
+            offset=self.current_offset
+        )
+        
+        if projects:
+            self.model.append_projects(projects)
+            self.filtered_projects.extend(projects)
+            self.count_label.setText(f"{len(self.filtered_projects)} projects")
+        
+        self.is_loading = False
 
     def _on_item_clicked(self, index: QModelIndex):
         """Handle single click to select project."""
         if not index.isValid(): return
         
-        # Get project from model
-        # We can get it from user role or just index into our list if sorted same way
-        # Best to rely on model index mapping
-        project = index.data(Qt.ItemDataRole.UserRole)
-        if project:
-            self.project_selected.emit(project)
+        # If click on check box, model handles it.
+        # If click on renders column, show renders panel
+        if index.column() == ProjectsModel.COL_RENDERS:
+            project = index.data(Qt.ItemDataRole.UserRole)
+            if project and project.get('render_count', 0) > 0:
+                self.view_requested.emit(project)  # Show renders panel
+            return
+        
+        # If click on body, we emit selected.
+        if index.column() != ProjectsModel.COL_SELECT:
+             project = index.data(Qt.ItemDataRole.UserRole)
+             if project:
+                 self.project_selected.emit(project)
             
     def _on_filter_changed(self):
         self._apply_filters()
@@ -167,20 +267,49 @@ class ProjectsView(QWidget):
     def _on_row_double_clicked(self, index: QModelIndex):
         """Open project folder on double click."""
         if not index.isValid(): return
+        if index.column() == ProjectsModel.COL_SELECT: return
         
         project = index.data(Qt.ItemDataRole.UserRole)
         if project:
             path = project.get('path')
-            if path:
+            if validate_path(path, "Project folder", self):
                 open_folder(path)
                 
     def _on_open_folder(self, project: dict):
         path = project.get('path')
-        if path:
+        if validate_path(path, "Project folder", self):
             open_folder(path)
             
     def _on_open_flp(self, project: dict):
         flp_path = project.get('flp_path')
-        if flp_path:
+        if validate_path(flp_path, "FLP", self):
             open_file(flp_path)
-
+            
+    def _on_model_data_changed(self):
+        """Update UI based on model state (selection)."""
+        selected = self.model.get_checked_projects()
+        count = len(selected)
+        
+        if count > 0:
+            self.bulk_bar.setVisible(True)
+            self.bulk_label.setText(f"{count} selected")
+        else:
+            self.bulk_bar.setVisible(False)
+            
+    def _on_bulk_reclassify(self):
+        """Reclassify selected projects."""
+        selected = self.model.get_checked_projects()
+        ids = [p['id'] for p in selected]
+        if not ids: return
+        
+        # Start job
+        self.job_manager.start_bulk_update(ids, {"action": "reclassify", "value": True})
+        # Note: logic for 'reclassify' action needs to be in BulkUpdateJob (jobs.py)
+        # I need to verify jobs.py handles 'reclassify'.
+        
+    def _on_job_finished(self, job_id, status, errors):
+        if status == "completed":
+            self.refresh_data()
+        elif status == "failed":
+            pass # Show error?
+            

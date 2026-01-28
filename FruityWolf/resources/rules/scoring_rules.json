@@ -1,0 +1,101 @@
+{
+    "_comment": "Scoring rules (0-100) for Completion/Maturity Score.",
+    "base_score": 0,
+    "modifiers": [
+        {
+            "id": "has_flp_no_render",
+            "score": 30,
+            "condition": {
+                "and": [
+                    {
+                        "signal": "has_flp",
+                        "op": "eq",
+                        "value": true
+                    },
+                    {
+                        "signal": "has_render_root",
+                        "op": "eq",
+                        "value": false
+                    }
+                ]
+            }
+        },
+        {
+            "id": "backups_mid",
+            "score": 15,
+            "condition": {
+                "signal": "backup_count",
+                "op": "gte",
+                "value": 5
+            }
+        },
+        {
+            "id": "samples_mid",
+            "score": 10,
+            "condition": {
+                "signal": "samples_count",
+                "op": "gte",
+                "value": 10
+            }
+        },
+        {
+            "id": "audio_rec",
+            "score": 10,
+            "condition": {
+                "signal": "audio_folder_count",
+                "op": "gte",
+                "value": 5
+            }
+        },
+        {
+            "id": "recent_activity",
+            "score": 20,
+            "condition": {
+                "signal": "project_modified_age_hours",
+                "op": "lt",
+                "value": 168
+            }
+        },
+        {
+            "id": "tagged_intent",
+            "score": 20,
+            "condition": {
+                "signal": "user_tags",
+                "op": "contains_any",
+                "value": [
+                    "finish",
+                    "render",
+                    "wip"
+                ]
+            }
+        },
+        {
+            "id": "tiny_folder_penalty",
+            "score": -20,
+            "condition": {
+                "signal": "folder_size_mb",
+                "op": "lt",
+                "value": 10
+            }
+        },
+        {
+            "id": "keywords_downgrade",
+            "score": -25,
+            "condition": {
+                "signal": "project_name",
+                "op": "contains_any",
+                "value": [
+                    "test",
+                    "practice",
+                    "demo",
+                    "try",
+                    "sketch"
+                ]
+            }
+        }
+    ],
+    "bounds": {
+        "min": 0,
+        "max": 100
+    }
+}

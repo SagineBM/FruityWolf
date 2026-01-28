@@ -26,6 +26,7 @@ from .project_panel import (
 )
 from .analysis_dialog import AnalysisDialog, BatchAnalysisDialog
 from .settings_dialog import SettingsDialog
+from .settings_view import SettingsView
 from .command_palette import CommandPaletteDialog
 
 __all__ = [
@@ -62,6 +63,7 @@ __all__ = [
     'BatchAnalysisDialog',
     # Settings
     'SettingsDialog',
+    'SettingsView',
     # Command Palette
     'CommandPaletteDialog',
 ]

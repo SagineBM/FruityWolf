@@ -1,4 +1,4 @@
-# FL Library Pro - Minimal Requirements
+# FruityWolf - Minimal Requirements
 # Use this for faster installation (without optional analysis features)
 
 # Core UI Framework

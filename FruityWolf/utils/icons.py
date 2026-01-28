@@ -65,7 +65,19 @@ class IconManager:
             "tuning-3": "tuning-3-svgrepo-com.svg",
             "alert": "alert-circle-svgrepo-com.svg",
             "music": "music-note-3-svgrepo-com.svg",
-            
+            "chevron_left": "arrow-left-svgrepo-com.svg",
+            "chevron_right": "arrow-right-svgrepo-com.svg",
+            "fl_studio": "fl-studio-mobile-svgrepo-com.svg",
+            "synthesizer": "synthesizer-svgrepo-com.svg",
+            "effect": "tuning-2-svgrepo-com.svg",
+            "app_icon": "app_icon.svg",
+            "app": "app_icon.svg",
+            "playlist-add": "playlist-add-svgrepo-com.svg",
+            "playlist-remove": "playlist-remove-svgrepo-com.svg",
+            "playlist-edit": "playlist-edit-svgrepo-com.svg",
+            "warning": "warning-svgrepo-com.svg",
+            "keyboard": "keyboard-svgrepo-com.svg",
+            "plus": "plus-svgrepo-com.svg",
         }
 
     @classmethod

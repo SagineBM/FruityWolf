@@ -51,12 +51,15 @@ DEFAULT_SHORTCUTS = {
     'go_library': 'Ctrl+1',
     'go_favorites': 'Ctrl+2',
     'go_playlists': 'Ctrl+3',
+    'go_projects': 'Ctrl+4',
+    'go_insights': 'Ctrl+5',
     
     # General
     'settings': 'Ctrl+,',
     'quit': 'Ctrl+Q',
     'fullscreen': 'F11',
     'toggle_queue': 'Q',  # Toggle queue panel
+    'toggle_details': 'Ctrl+B',  # Toggle details panel
     'command_palette': 'Ctrl+P',  # Command palette
 }
 
@@ -195,6 +198,8 @@ SHORTCUT_CATEGORIES = {
         ('go_library', 'Go to Library'),
         ('go_favorites', 'Go to Favorites'),
         ('go_playlists', 'Go to Playlists'),
+        ('go_projects', 'Go to Projects'),
+        ('go_insights', 'Go to Insights'),
     ],
     'General': [
         ('settings', 'Open Settings'),

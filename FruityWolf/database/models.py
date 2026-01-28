@@ -39,6 +39,7 @@ def get_db_path() -> Path:
 # SQL Schema
 SCHEMA = """
 -- Projects table: FL Studio project folders
+-- Projects table: FL Studio project folders
 CREATE TABLE IF NOT EXISTS projects (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
@@ -50,18 +51,70 @@ CREATE TABLE IF NOT EXISTS projects (
     backup_dir TEXT,
     last_scan INTEGER,
     
-    -- Classification & Signals
-    state TEXT,
+    -- Classification & Signals (Phase 1 Core)
+    state_id TEXT,
+    state_confidence REAL DEFAULT 0.0,
+    state_reason TEXT,    -- JSON List
+    
+    score INTEGER DEFAULT 0,  -- Completion Score
+    score_breakdown TEXT, -- JSON Dict
+    
+    next_action_id TEXT,
+    next_action_meta TEXT,   -- JSON Dict
+    next_action_reason TEXT, -- JSON List
+    
+    signals TEXT,         -- JSON { raw, derived }
+    user_meta TEXT,       -- JSON { vision, moods, energy, todo }
+    
+    last_played_ts INTEGER,
+    classified_at_ts INTEGER,
+    ruleset_hash TEXT,
+    
+    -- Legacy / Optional
+    state TEXT, 
     render_priority_score INTEGER DEFAULT 0,
     needs_render INTEGER DEFAULT 0,
-    signals TEXT,  -- JSON blob
+    
     backup_count INTEGER DEFAULT 0,
     samples_count INTEGER DEFAULT 0,
     stems_count INTEGER DEFAULT 0,
     flp_size_kb INTEGER DEFAULT 0,
     
+    -- FLP Deep Intelligence (PyFLP)
+    flp_tempo REAL,
+    flp_time_sig TEXT,
+    flp_version TEXT,
+    flp_title TEXT,
+    flp_artist TEXT,
+    flp_genre TEXT,
+    flp_pattern_count INTEGER DEFAULT 0,
+    flp_parsed_at INTEGER,
+    
     created_at INTEGER DEFAULT (strftime('%s', 'now')),
     updated_at INTEGER DEFAULT (strftime('%s', 'now'))
+);
+
+-- Project Plugins (from FLP)
+CREATE TABLE IF NOT EXISTS project_plugins (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+    plugin_name TEXT NOT NULL,
+    plugin_type TEXT DEFAULT 'generator',
+    channel_index INTEGER,
+    mixer_slot INTEGER,
+    preset_name TEXT,
+    created_at INTEGER DEFAULT (strftime('%s', 'now')),
+    UNIQUE(project_id, plugin_name, channel_index, mixer_slot)
+);
+
+-- Project Samples (from FLP)
+CREATE TABLE IF NOT EXISTS project_samples (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+    sample_name TEXT NOT NULL,
+    sample_path TEXT NOT NULL,
+    created_at INTEGER DEFAULT (strftime('%s', 'now')),
+    UNIQUE(project_id, sample_path)
 );
 
 -- Tracks table: Individual audio files (renders)
@@ -266,11 +319,22 @@ class Database:
     
     def init_db(self):
         """Initialize database schema."""
+        from .migrations import run_migrations, MIGRATIONS
+        
+        # Check if fresh install
+        is_fresh = False
         with self.cursor() as cur:
+             cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='projects'")
+             if not cur.fetchone():
+                 is_fresh = True
+
+        with self.cursor() as cur:
+            # Always run schema to ensure base tables exist
             cur.executescript(SCHEMA)
             
             # Insert default tags if not exists
             for name, color, category in DEFAULT_TAGS:
+                # ... same logic
                 cur.execute(
                     "INSERT OR IGNORE INTO tags (name, color, category) VALUES (?, ?, ?)",
                     (name, color, category)
@@ -291,10 +355,33 @@ class Database:
                     "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
                     (key, value)
                 )
-        
-        # Run pending migrations
-        from .migrations import run_migrations
-        run_migrations(self.connection)
+
+            # If fresh, mark all migrations as applied
+            if is_fresh:
+                # Ensure version table exists (Migration 2 normally does this, but we need it now)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS schema_version (
+                        version INTEGER PRIMARY KEY,
+                        description TEXT,
+                        applied_at INTEGER DEFAULT (strftime('%s', 'now'))
+                    )
+                """)
+                
+                for migration in MIGRATIONS:
+                    cur.execute(
+                        "INSERT OR IGNORE INTO schema_version (version, description) VALUES (?, ?)",
+                        (migration.version, migration.description)
+                    )
+                    
+        # Always run pending migrations (critical for schema updates)
+        # This ensures old databases get updated to latest schema
+        try:
+            migrations_applied = run_migrations(self.connection)
+            if migrations_applied > 0:
+                logger.info(f"Applied {migrations_applied} database migration(s)")
+        except Exception as e:
+            logger.error(f"Migration error (non-fatal): {e}")
+            # Continue anyway - queries will handle missing columns gracefully
     
     def close(self):
         """Close database connection."""

@@ -125,7 +125,7 @@ def open_folder(path: str) -> bool:
     
     try:
         if os.name == 'nt':  # Windows
-            subprocess.run(['explorer', path], check=True)
+            os.startfile(path)
         elif os.name == 'posix':  # Linux/Mac
             subprocess.run(['xdg-open', path], check=True)
         return True

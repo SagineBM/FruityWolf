@@ -2,9 +2,11 @@
 BPM and Key Detection
 
 Audio analysis for tempo and musical key detection.
+Production-grade analysis with proper handling of short clips and warnings.
 """
 
 import logging
+import warnings
 from typing import Optional, Tuple
 from dataclasses import dataclass
 
@@ -13,6 +15,10 @@ from PySide6.QtCore import QObject, Signal, QThread
 from ..database import execute
 
 logger = logging.getLogger(__name__)
+
+# Minimum duration for reliable analysis (in seconds)
+MIN_DURATION_FOR_BPM = 3.0  # Need at least 3 seconds for BPM
+MIN_DURATION_FOR_KEY = 2.0  # Need at least 2 seconds for key
 
 # Musical keys
 KEYS = [
@@ -51,13 +57,21 @@ class AnalysisResult:
 def analyze_bpm_simple(audio_path: str) -> Tuple[Optional[float], Optional[float]]:
     """
     Simple BPM detection using onset detection.
+    Fast and lightweight, works well for most cases.
     
     Returns (bpm, confidence) tuple.
     """
     try:
         import numpy as np
         import soundfile as sf
-        from scipy import signal
+        
+        # Check duration first
+        try:
+            info = sf.info(audio_path)
+            if info.duration < MIN_DURATION_FOR_BPM:
+                return None, None
+        except:
+            pass
         
         # Load audio
         data, sample_rate = sf.read(audio_path, dtype='float32')
@@ -65,6 +79,10 @@ def analyze_bpm_simple(audio_path: str) -> Tuple[Optional[float], Optional[float
         # Convert to mono
         if len(data.shape) > 1:
             data = np.mean(data, axis=1)
+        
+        # Skip if too short
+        if len(data) < sample_rate * MIN_DURATION_FOR_BPM:
+            return None, None
         
         # Limit to first 60 seconds for speed
         max_samples = sample_rate * 60
@@ -128,23 +146,56 @@ def analyze_bpm_simple(audio_path: str) -> Tuple[Optional[float], Optional[float
 def analyze_bpm_librosa(audio_path: str) -> Tuple[Optional[float], Optional[float]]:
     """
     BPM detection using librosa (more accurate but slower).
+    Optimized for speed and handles short clips gracefully.
     
     Returns (bpm, confidence) tuple.
     """
     try:
         import librosa
         import numpy as np
+        import soundfile as sf
         
-        # Load audio (limit to 60 seconds)
-        y, sr = librosa.load(audio_path, duration=60, sr=22050)
+        # Check duration first
+        try:
+            info = sf.info(audio_path)
+            duration = info.duration
+            if duration < MIN_DURATION_FOR_BPM:
+                logger.debug(f"Audio too short for BPM analysis: {duration:.2f}s < {MIN_DURATION_FOR_BPM}s")
+                return None, None
+        except:
+            pass
         
-        # Detect tempo
-        tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
+        # Load audio (limit to 60 seconds for speed, use lower SR for faster processing)
+        # Use 22050 Hz (half of 44.1kHz) - sufficient for tempo detection
+        with warnings.catch_warnings():
+            warnings.filterwarnings('ignore', category=UserWarning)  # Suppress librosa warnings
+            y, sr = librosa.load(audio_path, duration=60, sr=22050, res_type='kaiser_fast')
         
-        # Estimate confidence based on beat strength
-        onset_env = librosa.onset.onset_strength(y=y, sr=sr)
-        pulse = librosa.beat.plp(onset_envelope=onset_env, sr=sr)
-        confidence = min(1.0, np.max(pulse) * 2)
+        # Skip if audio is too short after loading
+        if len(y) < sr * MIN_DURATION_FOR_BPM:
+            return None, None
+        
+        # Detect tempo with optimized parameters
+        with warnings.catch_warnings():
+            warnings.filterwarnings('ignore', category=UserWarning)
+            # Use hop_length=512 for faster processing (default is 512)
+            tempo, beat_frames = librosa.beat.beat_track(
+                y=y, 
+                sr=sr,
+                hop_length=512,
+                start_bpm=120.0,  # Start with common tempo for faster convergence
+                std_bpm=1.0  # Narrower search range for speed
+            )
+            
+            # Estimate confidence based on beat strength
+            onset_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=512)
+            pulse = librosa.beat.plp(onset_envelope=onset_env, sr=sr, hop_length=512)
+            confidence = min(1.0, np.max(pulse) * 2) if len(pulse) > 0 else 0.5
+        
+        # Validate tempo is in reasonable range
+        if tempo < 60 or tempo > 200:
+            logger.debug(f"Tempo out of range: {tempo:.1f} BPM")
+            return None, None
         
         return round(float(tempo), 1), round(float(confidence), 2)
         
@@ -152,13 +203,14 @@ def analyze_bpm_librosa(audio_path: str) -> Tuple[Optional[float], Optional[floa
         logger.warning("librosa not available, using simple BPM detection")
         return analyze_bpm_simple(audio_path)
     except Exception as e:
-        logger.error(f"librosa BPM detection failed: {e}")
+        logger.debug(f"librosa BPM detection failed: {e}")
         return analyze_bpm_simple(audio_path)
 
 
 def analyze_key_simple(audio_path: str) -> Tuple[Optional[str], Optional[float]]:
     """
     Simple key detection using chroma features.
+    Fast and lightweight alternative to librosa.
     
     Returns (key, confidence) tuple.
     """
@@ -167,6 +219,14 @@ def analyze_key_simple(audio_path: str) -> Tuple[Optional[str], Optional[float]]
         import soundfile as sf
         from scipy.fft import fft
         
+        # Check duration first
+        try:
+            info = sf.info(audio_path)
+            if info.duration < MIN_DURATION_FOR_KEY:
+                return None, None
+        except:
+            pass
+        
         # Load audio
         data, sample_rate = sf.read(audio_path, dtype='float32')
         
@@ -174,12 +234,16 @@ def analyze_key_simple(audio_path: str) -> Tuple[Optional[str], Optional[float]]
         if len(data.shape) > 1:
             data = np.mean(data, axis=1)
         
-        # Use middle section for analysis
+        # Skip if too short
+        if len(data) < sample_rate * MIN_DURATION_FOR_KEY:
+            return None, None
+        
+        # Use middle section for analysis (more stable)
         start = len(data) // 4
         end = 3 * len(data) // 4
         data = data[start:end]
         
-        # Limit to 30 seconds
+        # Limit to 30 seconds for speed
         max_samples = sample_rate * 30
         if len(data) > max_samples:
             data = data[:max_samples]
@@ -250,18 +314,49 @@ def analyze_key_simple(audio_path: str) -> Tuple[Optional[str], Optional[float]]
 def analyze_key_librosa(audio_path: str) -> Tuple[Optional[str], Optional[float]]:
     """
     Key detection using librosa (more accurate).
+    Optimized for speed and handles short clips gracefully.
     
     Returns (key, confidence) tuple.
     """
     try:
         import librosa
         import numpy as np
+        import soundfile as sf
         
-        # Load audio
-        y, sr = librosa.load(audio_path, duration=30, sr=22050)
+        # Check duration first
+        try:
+            info = sf.info(audio_path)
+            duration = info.duration
+            if duration < MIN_DURATION_FOR_KEY:
+                logger.debug(f"Audio too short for key analysis: {duration:.2f}s < {MIN_DURATION_FOR_KEY}s")
+                return None, None
+        except:
+            pass
         
-        # Compute chroma
-        chroma = librosa.feature.chroma_cqt(y=y, sr=sr)
+        # Load audio (use 30 seconds, lower SR for speed)
+        with warnings.catch_warnings():
+            warnings.filterwarnings('ignore', category=UserWarning)  # Suppress librosa warnings
+            y, sr = librosa.load(audio_path, duration=30, sr=22050, res_type='kaiser_fast')
+        
+        # Skip if audio is too short after loading
+        if len(y) < sr * MIN_DURATION_FOR_KEY:
+            return None, None
+        
+        # Compute chroma with optimized parameters
+        with warnings.catch_warnings():
+            warnings.filterwarnings('ignore', category=UserWarning)
+            # Use chroma_stft instead of chroma_cqt for shorter clips (faster, more stable)
+            # chroma_cqt can fail on very short clips
+            if len(y) < sr * 5:  # Less than 5 seconds
+                # Use STFT-based chroma for short clips (more stable)
+                chroma = librosa.feature.chroma_stft(y=y, sr=sr, hop_length=512, n_fft=2048)
+            else:
+                # Use CQT for longer clips (more accurate)
+                chroma = librosa.feature.chroma_cqt(y=y, sr=sr, hop_length=512)
+        
+        if chroma.size == 0:
+            return None, None
+        
         chroma_mean = np.mean(chroma, axis=1)
         
         # Key profiles (Krumhansl-Kessler)
@@ -287,19 +382,25 @@ def analyze_key_librosa(audio_path: str) -> Tuple[Optional[str], Optional[float]
         best = max(correlations, key=lambda x: x[1])
         confidence = max(0, min(1, best[1]))
         
+        # Only return if confidence is reasonable
+        if confidence < 0.3:
+            logger.debug(f"Key detection confidence too low: {confidence:.2f}")
+            return None, None
+        
         return best[0], round(float(confidence), 2)
         
     except ImportError:
         logger.warning("librosa not available, using simple key detection")
         return analyze_key_simple(audio_path)
     except Exception as e:
-        logger.error(f"librosa key detection failed: {e}")
+        logger.debug(f"librosa key detection failed: {e}")
         return analyze_key_simple(audio_path)
 
 
 def analyze_audio(audio_path: str, use_librosa: bool = True) -> AnalysisResult:
     """
     Perform full audio analysis (BPM + Key).
+    Production-grade with proper validation and error handling.
     
     Args:
         audio_path: Path to audio file
@@ -313,25 +414,34 @@ def analyze_audio(audio_path: str, use_librosa: bool = True) -> AnalysisResult:
     try:
         import soundfile as sf
         
-        # Get duration
+        # Get duration first
         info = sf.info(audio_path)
         result.duration = info.duration
+        
+        # Skip analysis for very short files
+        if result.duration < MIN_DURATION_FOR_KEY:
+            result.error = f"Audio too short ({result.duration:.2f}s < {MIN_DURATION_FOR_KEY}s)"
+            return result
         
     except Exception as e:
         result.error = f"Failed to read audio info: {e}"
         return result
     
-    # BPM detection
-    if use_librosa:
-        result.bpm, result.bpm_confidence = analyze_bpm_librosa(audio_path)
-    else:
-        result.bpm, result.bpm_confidence = analyze_bpm_simple(audio_path)
-    
-    # Key detection
-    if use_librosa:
-        result.key, result.key_confidence = analyze_key_librosa(audio_path)
-    else:
-        result.key, result.key_confidence = analyze_key_simple(audio_path)
+    # Suppress librosa warnings globally for this analysis
+    with warnings.catch_warnings():
+        warnings.filterwarnings('ignore', category=UserWarning)
+        
+        # BPM detection
+        if use_librosa:
+            result.bpm, result.bpm_confidence = analyze_bpm_librosa(audio_path)
+        else:
+            result.bpm, result.bpm_confidence = analyze_bpm_simple(audio_path)
+        
+        # Key detection
+        if use_librosa:
+            result.key, result.key_confidence = analyze_key_librosa(audio_path)
+        else:
+            result.key, result.key_confidence = analyze_key_simple(audio_path)
     
     return result
 

@@ -134,31 +134,71 @@ class AudioPlayer(QObject):
         return self._use_vlc or hasattr(self, '_qt_player')
     
     def _init_backend(self):
-        """Initialize VLC backend."""
+        """Initialize VLC backend with robust error handling."""
         try:
             import vlc
             
-            # Create VLC instance with options
-            self._vlc_instance = vlc.Instance([
+            # Create VLC instance with options to prevent DLL conflicts
+            # Disable problematic plugins that cause DLL errors
+            vlc_args = [
                 '--no-xlib',  # Disable X11
                 '--quiet',
                 '--no-video',  # Audio only
-            ])
+                '--intf', 'dummy',  # No interface
+                '--no-plugins-cache',  # Don't cache plugins (prevents DLL conflicts)
+                '--no-qt-privacy-ask',  # Don't ask for privacy
+                '--no-qt-system-tray',  # Disable system tray
+            ]
+            
+            # Try to create VLC instance - catch DLL errors early
+            try:
+                self._vlc_instance = vlc.Instance(vlc_args)
+                if not self._vlc_instance:
+                    raise Exception("VLC instance creation returned None")
+            except Exception as dll_error:
+                # Catch DLL loading errors before they crash
+                error_msg = str(dll_error)
+                if 'decode_URI' in error_msg or 'entry point' in error_msg.lower() or 'DLL' in error_msg:
+                    raise Exception(f"VLC DLL compatibility error: {error_msg}")
+                raise
+            
+            # Test creating a player to verify it works
+            try:
+                test_player = self._vlc_instance.media_player_new()
+                if not test_player:
+                    raise Exception("VLC player creation failed")
+                test_player.release()  # Release test player
+            except Exception as player_error:
+                raise Exception(f"VLC player initialization failed: {player_error}")
+            
+            # Create actual player
             self._vlc_player = self._vlc_instance.media_player_new()
             self._use_vlc = True
             
             # Set up event manager
-            events = self._vlc_player.event_manager()
-            events.event_attach(vlc.EventType.MediaPlayerEndReached, self._on_end_reached)
-            events.event_attach(vlc.EventType.MediaPlayerEncounteredError, self._on_error)
+            try:
+                events = self._vlc_player.event_manager()
+                events.event_attach(vlc.EventType.MediaPlayerEndReached, self._on_end_reached)
+                events.event_attach(vlc.EventType.MediaPlayerEncounteredError, self._on_error)
+            except Exception as event_error:
+                logger.warning(f"VLC event manager setup failed: {event_error}")
+                # Continue without events - playback will still work
             
             logger.info("VLC backend initialized successfully")
             
         except ImportError:
             logger.warning("python-vlc not available, using Qt Multimedia fallback")
+            self._use_vlc = False
             self._init_qt_fallback()
         except Exception as e:
-            logger.error(f"Failed to initialize VLC: {e}")
+            error_msg = str(e)
+            # Check for DLL-related errors
+            if 'decode_URI' in error_msg or 'DLL' in error_msg or 'entry point' in error_msg.lower() or 'VLC DLL' in error_msg:
+                logger.warning(f"VLC DLL compatibility issue detected: {error_msg}")
+                logger.warning("Falling back to Qt Multimedia (VLC plugins incompatible)")
+            else:
+                logger.error(f"Failed to initialize VLC: {e}")
+            self._use_vlc = False
             self._init_qt_fallback()
     
     def _init_qt_fallback(self):

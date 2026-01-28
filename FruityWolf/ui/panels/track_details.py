@@ -12,6 +12,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPixmap, QColor
 
 from ...utils import get_icon, format_duration, get_cover_art, get_placeholder_cover, format_file_size
+from ...utils.image_manager import get_image_manager
 
 class TrackDetailsPanel(QWidget):
     """Side panel for displaying Track details."""
@@ -26,19 +27,24 @@ class TrackDetailsPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.current_track = None
+        self.image_manager = get_image_manager()
+        self.image_manager.image_loaded.connect(self._on_image_loaded)
         self._setup_ui()
         
     def _setup_ui(self):
         # Scroll Area Wrapper
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        self.setStyleSheet("QWidget { background: transparent; }")
         
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll.setStyleSheet("QScrollArea { background: transparent; border: none; } QScrollArea > QWidget > QWidget { background: transparent; }")
         
         self.container = QWidget()
+        self.container.setStyleSheet("QWidget { background: transparent; }")
         self.main_layout = QVBoxLayout(self.container)
         self.main_layout.setContentsMargins(16, 16, 16, 16)
         self.main_layout.setSpacing(12)
@@ -265,12 +271,16 @@ class TrackDetailsPanel(QWidget):
         else:
              self.btn_open_flp.setToolTip("Project file not found")
             
-        # Cover
+        # Cover - Async
         project_path = track.get('project_path')
-        cover_path = get_cover_art(project_path)
-        if cover_path:
-            pixmap = QPixmap(cover_path)
-            self.cover_label.setPixmap(pixmap.scaled(200, 200, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        self.current_cover_path = get_cover_art(project_path)
+        
+        if self.current_cover_path:
+            pix = self.image_manager.get_image(self.current_cover_path, 200)
+            if pix:
+                self.cover_label.setPixmap(pix)
+            else:
+                self.cover_label.setPixmap(get_placeholder_cover(200, track.get('title', '')))
         else:
             self.cover_label.setPixmap(get_placeholder_cover(200, track.get('title', '')))
             
@@ -370,3 +380,9 @@ class TrackDetailsPanel(QWidget):
     def _on_open_flp(self):
         if self.current_track:
             self.open_flp_clicked.emit(self.current_track)
+
+    def _on_image_loaded(self, path: str, pixmap: QPixmap):
+        """Update cover if it matches current track."""
+        if hasattr(self, 'current_cover_path') and path == self.current_cover_path:
+            if not pixmap.isNull():
+                self.cover_label.setPixmap(pixmap)
