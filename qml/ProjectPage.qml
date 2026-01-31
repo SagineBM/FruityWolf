@@ -124,7 +124,7 @@ Item {
             Layout.fillWidth: true
             
             TabButton {
-                text: "Renders (" + (project ? project.renders_count || 1 : 0) + ")"
+                text: "Renders (" + (project ? (project.render_count || project.renders_count || 0) : 0) + ")"
             }
             TabButton {
                 text: "Stems (" + (project ? project.stems_count || 0 : 0) + ")"
@@ -152,7 +152,20 @@ Item {
             
             // Renders
             FileListView {
-                model: project ? [project] : []
+                id: rendersListView
+                model: {
+                    if (!project) return []
+                    // Try project_id first, then id
+                    var pid = project.project_id || project.id
+                    if (pid) {
+                        return backend.getProjectRenders(pid)
+                    }
+                    // Fallback: scan project root folder for audio files
+                    if (project.project_path) {
+                        return backend.getFilesInFolder(project.project_path)
+                    }
+                    return []
+                }
                 emptyText: "No renders found"
                 onFileClicked: function(file) {
                     projectPage.playTrack(file)

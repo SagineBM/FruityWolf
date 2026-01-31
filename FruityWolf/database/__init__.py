@@ -11,6 +11,8 @@ from .models import (
     get_cache_path,
     get_db_path,
     execute,
+    execute_many,
+    batch_transaction,
     query,
     query_one,
     get_setting,
@@ -36,6 +38,8 @@ __all__ = [
     
     # Query functions
     'execute',
+    'execute_many',
+    'batch_transaction',
     'query',
     'query_one',
     

@@ -12,15 +12,18 @@ from typing import Optional, List, Dict, Any
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame,
     QScrollArea, QGridLayout, QGroupBox, QProgressBar, QTextEdit,
-    QLineEdit, QComboBox, QCheckBox, QSizePolicy
+    QLineEdit, QComboBox, QCheckBox, QSizePolicy, QFileDialog, QMenu
 )
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QFont, QPixmap
+from PySide6.QtCore import Qt, Signal, QTimer
+from PySide6.QtGui import QColor, QFont, QPixmap, QAction
 
-from ...utils import get_icon, format_smart_date, get_placeholder_cover, get_cover_art
+from ...utils import get_icon, format_smart_date, format_absolute_date, get_placeholder_cover, get_cover_art
 from ...utils.image_manager import get_image_manager
 from ...classifier.engine import ProjectState
 from ...database import execute, query_one
+from ...services.cover_manager import (
+    save_cover_image, set_project_cover, get_project_cover_path
+)
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +36,8 @@ class ProjectDetailsPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.current_project = None
+        self.current_cover_path = None
+        self.current_cover_request_id = None
         self.image_manager = get_image_manager()
         self.image_manager.image_loaded.connect(self._on_image_loaded)
         self._setup_ui()
@@ -55,11 +60,39 @@ class ProjectDetailsPanel(QWidget):
         self.main_layout.setSpacing(16)
         
         # 1. HEADER (Cover + Title)
+        cover_container = QWidget()
+        cover_layout = QVBoxLayout(cover_container)
+        cover_layout.setContentsMargins(0, 0, 0, 0)
+        cover_layout.setSpacing(8)
+        
         self.cover_label = QLabel()
         self.cover_label.setFixedSize(200, 200)
         self.cover_label.setStyleSheet("background-color: #0f172a; border-radius: 12px; border: 1px solid #1e293b;")
         self.cover_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.main_layout.addWidget(self.cover_label, 0, Qt.AlignmentFlag.AlignCenter)
+        self.cover_label.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.cover_label.customContextMenuRequested.connect(self._show_cover_menu)
+        cover_layout.addWidget(self.cover_label, 0, Qt.AlignmentFlag.AlignCenter)
+        
+        self.cover_btn = QPushButton("Change Cover")
+        self.cover_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #1e293b;
+                color: #94a3b8;
+                border: 1px solid #334155;
+                border-radius: 6px;
+                padding: 4px 12px;
+                font-size: 11px;
+            }
+            QPushButton:hover {
+                background-color: #334155;
+                color: #f1f5f9;
+            }
+        """)
+        self.cover_btn.clicked.connect(self._change_cover)
+        self.cover_btn.hide()  # Show only when project is selected
+        cover_layout.addWidget(self.cover_btn, 0, Qt.AlignmentFlag.AlignCenter)
+        
+        self.main_layout.addWidget(cover_container, 0, Qt.AlignmentFlag.AlignCenter)
         
         self.title_label = QLabel("Select a project")
         self.title_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #f1f5f9;")
@@ -253,22 +286,35 @@ class ProjectDetailsPanel(QWidget):
         if not project:
             self.clear()
             return
-            
-        # Basic Info
-        # Cover - Async
-        path = project.get('path')
-        self.current_cover_path = get_cover_art(path)
         
+        # Cancel previous cover request
+        if self.current_cover_request_id:
+            self.image_manager.cancel_request(self.current_cover_request_id)
+        
+        # Basic Info
+        # Cover - Async loading
+        project_id = project.get('id')
+        path = project.get('path')
+        
+        # Get cover path (custom first, then auto-detected)
+        self.current_cover_path = get_project_cover_path(project_id, path) if project_id else get_cover_art(path)
+        self.current_cover_request_id = f"project_{project_id}_{path}"
+        
+        # Show placeholder immediately
+        self.cover_label.setPixmap(get_placeholder_cover(200, project.get('name', ''), is_project=True))
+        self.cover_btn.show()
+        
+        # Load cover asynchronously
         if self.current_cover_path:
-            pix = self.image_manager.get_image(self.current_cover_path, 200)
+            pix = self.image_manager.get_image(self.current_cover_path, 200, self.current_cover_request_id)
             if pix:
+                # Found in cache, use immediately
                 self.cover_label.setPixmap(pix)
-            else:
-                self.cover_label.setPixmap(get_placeholder_cover(200, project.get('name', ''), is_project=True))
-        else:
-            self.cover_label.setPixmap(get_placeholder_cover(200, project.get('name', ''), is_project=True))
         self.title_label.setText(project.get('name', 'Unknown'))
-        self.date_label.setText(format_smart_date(project.get('updated_at', 0)))
+        # Use file_created_at for creation date, with updated_at as fallback
+        created_ts = project.get('file_created_at') or project.get('created_at') or project.get('updated_at', 0)
+        self.date_label.setText(format_smart_date(created_ts))
+        self.date_label.setToolTip(f"Created: {format_absolute_date(created_ts)}")
         
         # State
         state = project.get('state_id') or project.get('state') or 'Unknown'
@@ -382,6 +428,9 @@ class ProjectDetailsPanel(QWidget):
 
     def clear(self):
         self.current_project = None
+        self.current_cover_path = None
+        self.current_cover_request_id = None
+        self.cover_btn.hide()
         self.title_label.setText("Select a project")
         self.date_label.setText("")
         self.state_label.setText("Unknown")
@@ -390,6 +439,7 @@ class ProjectDetailsPanel(QWidget):
         self.txt_vision.clear()
         self.txt_todo.clear()
         self.inp_moods.clear()
+        self.cover_label.setPixmap(get_placeholder_cover(200, "", is_project=True))
         
     def _get_state_color_hex(self, state: str) -> str:
         map_ = {
@@ -410,11 +460,95 @@ class ProjectDetailsPanel(QWidget):
         if self.current_project and self.current_project.get('flp_path'):
             self.open_flp_clicked.emit(self.current_project.get('flp_path'))
 
-    def _on_image_loaded(self, path: str, pixmap: QPixmap):
+    def _on_image_loaded(self, path: str, pixmap: QPixmap, request_id: str):
         """Update cover if it matches current project."""
-        if hasattr(self, 'current_cover_path') and path == self.current_cover_path:
+        # Only update if this is the current request
+        if request_id == self.current_cover_request_id and path == self.current_cover_path:
             if not pixmap.isNull():
                 self.cover_label.setPixmap(pixmap)
-
-# Missing imports for QTimer
-from PySide6.QtCore import QTimer
+    
+    def _show_cover_menu(self, pos):
+        """Show context menu for cover."""
+        if not self.current_project:
+            return
+        
+        menu = QMenu(self)
+        
+        change_action = QAction("Change Cover...", self)
+        change_action.triggered.connect(self._change_cover)
+        menu.addAction(change_action)
+        
+        remove_action = QAction("Remove Custom Cover", self)
+        remove_action.triggered.connect(self._remove_cover)
+        menu.addAction(remove_action)
+        
+        menu.exec(self.cover_label.mapToGlobal(pos))
+    
+    def _change_cover(self):
+        """Open file dialog to select new cover image."""
+        if not self.current_project:
+            return
+        
+        project_id = self.current_project.get('id')
+        if not project_id:
+            return
+        
+        # Open file dialog
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Cover Image",
+            "",
+            "Image Files (*.jpg *.jpeg *.png *.webp *.bmp);;All Files (*)"
+        )
+        
+        if not file_path:
+            return
+        
+        try:
+            # Save cover image
+            saved_path = save_cover_image(file_path, 'project', project_id)
+            if saved_path:
+                # Update database
+                if set_project_cover(project_id, saved_path):
+                    # Update UI
+                    self.current_cover_path = saved_path
+                    self.current_cover_request_id = f"project_{project_id}_{saved_path}"
+                    
+                    # Load new cover
+                    pix = self.image_manager.get_image(saved_path, 200, self.current_cover_request_id)
+                    if pix:
+                        self.cover_label.setPixmap(pix)
+                    else:
+                        # Will be loaded async
+                        self.cover_label.setPixmap(get_placeholder_cover(200, self.current_project.get('name', ''), is_project=True))
+                else:
+                    logger.error("Failed to update project cover in database")
+        except Exception as e:
+            logger.error(f"Failed to change cover: {e}")
+    
+    def _remove_cover(self):
+        """Remove custom cover and revert to auto-detected."""
+        if not self.current_project:
+            return
+        
+        project_id = self.current_project.get('id')
+        if not project_id:
+            return
+        
+        try:
+            if set_project_cover(project_id, None):
+                # Reload cover (will use auto-detected)
+                path = self.current_project.get('path')
+                self.current_cover_path = get_project_cover_path(project_id, path)
+                self.current_cover_request_id = f"project_{project_id}_{path}"
+                
+                if self.current_cover_path:
+                    pix = self.image_manager.get_image(self.current_cover_path, 200, self.current_cover_request_id)
+                    if pix:
+                        self.cover_label.setPixmap(pix)
+                    else:
+                        self.cover_label.setPixmap(get_placeholder_cover(200, self.current_project.get('name', ''), is_project=True))
+                else:
+                    self.cover_label.setPixmap(get_placeholder_cover(200, self.current_project.get('name', ''), is_project=True))
+        except Exception as e:
+            logger.error(f"Failed to remove cover: {e}")

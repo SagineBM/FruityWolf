@@ -14,7 +14,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 
 from ...database import query
-from ...utils import get_icon, format_smart_date
+from ...utils import get_icon, format_smart_date, format_absolute_date
 
 logger = logging.getLogger(__name__)
 
@@ -139,8 +139,11 @@ class PluginDetailsPanel(QWidget):
         name_lbl.setWordWrap(True)
         top_row.addWidget(name_lbl, 1)
         
-        date_lbl = QLabel(format_smart_date(project.get('updated_at', 0)))
+        # Use file_created_at for creation date
+        created_ts = project.get('file_created_at') or project.get('created_at') or project.get('updated_at', 0)
+        date_lbl = QLabel(format_smart_date(created_ts))
         date_lbl.setStyleSheet("color: #64748b; font-size: 10px; border: none; background: transparent;")
+        date_lbl.setToolTip(f"Created: {format_absolute_date(created_ts)}")
         top_row.addWidget(date_lbl)
         card_layout.addLayout(top_row)
         

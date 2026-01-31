@@ -11,11 +11,28 @@ logger = logging.getLogger(__name__)
 
 COVER_NAMES = ['cover.jpg', 'cover.png', 'folder.jpg', 'folder.png', 'thumb.jpg', 'artwork.jpg']
 
-def get_cover_art(project_path: str) -> Optional[str]:
+def get_cover_art(project_path: str, project_id: Optional[int] = None) -> Optional[str]:
     """
     Find cover art in the project folder.
-    Returns path to image or None.
+    
+    Args:
+        project_path: Path to project folder
+        project_id: Optional project ID to check for custom cover first
+    
+    Returns:
+        Path to image or None.
     """
+    # Check custom cover first if project_id provided
+    if project_id:
+        try:
+            from ..services.cover_manager import get_project_cover_path
+            custom_path = get_project_cover_path(project_id, project_path)
+            if custom_path:
+                return custom_path
+        except ImportError:
+            pass  # Fallback to auto-detection
+    
+    # Auto-detect cover in project folder
     if not project_path or not os.path.isdir(project_path):
         return None
         

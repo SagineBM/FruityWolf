@@ -5,11 +5,14 @@ SQLite database schema for FL Library Pro.
 """
 
 import os
+import logging
 import sqlite3
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from contextlib import contextmanager
+
+logger = logging.getLogger(__name__)
 
 
 def get_app_data_path() -> Path:
@@ -213,6 +216,11 @@ CREATE INDEX IF NOT EXISTS idx_projects_name ON projects(name);
 CREATE INDEX IF NOT EXISTS idx_tags_name ON tags(name);
 CREATE INDEX IF NOT EXISTS idx_playlist_tracks_position ON playlist_tracks(playlist_id, position);
 
+-- Optimization Indexes (base schema only; renders/file_created_at indexes are in migrations)
+CREATE INDEX IF NOT EXISTS idx_projects_updated_at ON projects(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_projects_score ON projects(score DESC);
+CREATE INDEX IF NOT EXISTS idx_project_plugins_project_name ON project_plugins(project_id, plugin_name);
+
 -- Full-text search virtual table
 CREATE VIRTUAL TABLE IF NOT EXISTS tracks_fts USING fts5(
     title, 
@@ -356,9 +364,10 @@ class Database:
                     (key, value)
                 )
 
-            # If fresh, mark all migrations as applied
+            # If fresh, ensure version table exists so run_migrations can record applied migrations.
+            # Do NOT mark migrations as applied here — run_migrations() must run them to create
+            # tables like renders that are not in the base SCHEMA.
             if is_fresh:
-                # Ensure version table exists (Migration 2 normally does this, but we need it now)
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS schema_version (
                         version INTEGER PRIMARY KEY,
@@ -366,13 +375,7 @@ class Database:
                         applied_at INTEGER DEFAULT (strftime('%s', 'now'))
                     )
                 """)
-                
-                for migration in MIGRATIONS:
-                    cur.execute(
-                        "INSERT OR IGNORE INTO schema_version (version, description) VALUES (?, ?)",
-                        (migration.version, migration.description)
-                    )
-                    
+
         # Always run pending migrations (critical for schema updates)
         # This ensures old databases get updated to latest schema
         try:
@@ -380,8 +383,9 @@ class Database:
             if migrations_applied > 0:
                 logger.info(f"Applied {migrations_applied} database migration(s)")
         except Exception as e:
-            logger.error(f"Migration error (non-fatal): {e}")
-            # Continue anyway - queries will handle missing columns gracefully
+            logger.critical(f"Critical Migration Error: {e}", exc_info=True)
+            # Re-raise to prevent running on broken schema
+            raise RuntimeError(f"Database migration failed: {e}") from e
     
     def close(self):
         """Close database connection."""
@@ -396,18 +400,90 @@ def get_db() -> Database:
     return Database()
 
 
+# Transaction management for batch operations
+_batch_mode = False
+_batch_cursor = None
+
+@contextmanager
+def batch_transaction():
+    """
+    Context manager for batch database operations.
+    
+    All execute() calls within this context will NOT auto-commit.
+    Commits happen at the end of the context (or rollback on exception).
+    
+    Usage:
+        with batch_transaction():
+            for item in items:
+                execute("INSERT ...", params)  # No auto-commit
+            # Auto-commit happens here
+    """
+    global _batch_mode, _batch_cursor
+    
+    if _batch_mode:
+        # Already in batch mode, just yield
+        yield
+        return
+    
+    db = get_db()
+    _batch_mode = True
+    _batch_cursor = None
+    
+    try:
+        yield
+        db.connection.commit()
+    except Exception:
+        db.connection.rollback()
+        raise
+    finally:
+        _batch_mode = False
+        _batch_cursor = None
+
+
 def execute(sql: str, params: tuple = ()) -> sqlite3.Cursor:
-    """Execute a SQL query and return cursor."""
+    """
+    Execute a SQL query and return cursor.
+    
+    If inside a batch_transaction() context, does NOT auto-commit.
+    Otherwise, commits immediately after execution.
+    """
+    global _batch_mode
+    
     db = get_db()
     cur = db.connection.cursor()
     cur.execute(sql, params)
-    db.connection.commit()
+    
+    # Only auto-commit if not in batch mode
+    if not _batch_mode:
+        db.connection.commit()
+    
+    return cur
+
+
+def execute_many(sql: str, params_list: List[tuple]) -> sqlite3.Cursor:
+    """
+    Execute a SQL query with multiple parameter sets (executemany).
+    
+    Much faster than calling execute() in a loop for bulk inserts.
+    Commits at the end if not in batch mode.
+    """
+    global _batch_mode
+    
+    db = get_db()
+    cur = db.connection.cursor()
+    cur.executemany(sql, params_list)
+    
+    if not _batch_mode:
+        db.connection.commit()
+    
     return cur
 
 
 def query(sql: str, params: tuple = ()) -> List[sqlite3.Row]:
     """Execute a SQL query and return all rows."""
-    cur = execute(sql, params)
+    db = get_db()
+    cur = db.connection.cursor()
+    cur.execute(sql, params)
     result = cur.fetchall()
     cur.close()
     return result
@@ -415,7 +491,9 @@ def query(sql: str, params: tuple = ()) -> List[sqlite3.Row]:
 
 def query_one(sql: str, params: tuple = ()) -> Optional[sqlite3.Row]:
     """Execute a SQL query and return one row."""
-    cur = execute(sql, params)
+    db = get_db()
+    cur = db.connection.cursor()
+    cur.execute(sql, params)
     result = cur.fetchone()
     cur.close()
     return result

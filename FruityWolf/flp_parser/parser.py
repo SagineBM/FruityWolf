@@ -1066,7 +1066,11 @@ class FLPParser:
             # 5. Pattern Count
             # =================================================================
             if hasattr(project, 'patterns'):
-                result['pattern_count'] = len(project.patterns)
+                try:
+                    result['pattern_count'] = len(project.patterns)
+                except Exception:
+                    # Some FLPs have no patterns (NoModelsFound exception)
+                    result['pattern_count'] = 0
             
             # =================================================================
             # 6. Store Debug Info

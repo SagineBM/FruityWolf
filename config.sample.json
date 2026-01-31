@@ -1,12 +1,12 @@
 {
-    "name": "FL Library Pro",
-    "version": "1.0.0",
-    "description": "A Spotify-like library manager and player for FL Studio project folders",
-    "author": "FL Library Pro Team",
+    "name": "FruityWolf",
+    "version": "2.0.0",
+    "description": "A library manager and player for FL Studio project folders",
+    "author": "Mohssine Bencaga",
     "license": "MIT",
     "python_requires": ">=3.11",
     "entry_point": "FruityWolf.__main__:main",
-    "default_library_root": "F:\\1.Project FL S1",
+    "default_library_root": "",
     "audio_extensions": [
         ".wav",
         ".mp3",

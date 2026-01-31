@@ -3,10 +3,14 @@ from PySide6.QtWidgets import (
     QComboBox, QLineEdit, QPushButton, QAbstractItemView, QFrame,
     QCheckBox, QStyle, QMessageBox
 )
-from PySide6.QtCore import Qt, Signal, QSize, QModelIndex
+from PySide6.QtCore import Qt, Signal, QSize, QModelIndex, QSortFilterProxyModel
 from PySide6.QtGui import QColor, QIcon, QBrush
 
+import logging
+from typing import List
 from ..database import get_db, query
+
+logger = logging.getLogger(__name__)
 from ..utils import get_icon, open_file, open_folder, format_smart_date
 from ..utils.path_utils import validate_path
 from ..scanner.library_scanner import get_all_projects, get_sample_usage
@@ -100,6 +104,17 @@ class ProjectsView(QWidget):
         self.model = ProjectsModel(parent=self)
         self.model.dataChanged.connect(self._on_model_data_changed)
         self.table.setModel(self.model)
+        self.table.setSortingEnabled(True)
+        
+        # Store sort state for queue building - default to CREATED DESC (newest first)
+        self._current_sort_column = ProjectsModel.COL_CREATED
+        self._current_sort_order = Qt.SortOrder.DescendingOrder
+        
+        # Set default sort indicator on header
+        self.table.horizontalHeader().setSortIndicator(ProjectsModel.COL_CREATED, Qt.SortOrder.DescendingOrder)
+        
+        # Connect header sort indicator to track current sort state
+        self.table.horizontalHeader().sortIndicatorChanged.connect(self._on_sort_changed)
         
         # Delegate
         self.delegate = ProjectsDelegate(self.table)
@@ -126,8 +141,11 @@ class ProjectsView(QWidget):
         h.setSectionResizeMode(ProjectsModel.COL_NEXT_ACTION, QHeaderView.ResizeMode.Interactive)
         self.table.setColumnWidth(ProjectsModel.COL_NEXT_ACTION, 150)
         
+        h.setSectionResizeMode(ProjectsModel.COL_CREATED, QHeaderView.ResizeMode.Interactive)
+        self.table.setColumnWidth(ProjectsModel.COL_CREATED, 100)
+        
         h.setSectionResizeMode(ProjectsModel.COL_LAST_PLAYED, QHeaderView.ResizeMode.Interactive)
-        self.table.setColumnWidth(ProjectsModel.COL_LAST_PLAYED, 120)
+        self.table.setColumnWidth(ProjectsModel.COL_LAST_PLAYED, 100)
         
         h.setSectionResizeMode(ProjectsModel.COL_RENDERS, QHeaderView.ResizeMode.ResizeToContents)
         
@@ -173,6 +191,12 @@ class ProjectsView(QWidget):
         # Could add more: Set State, Add Tag...
         
         layout.addWidget(self.bulk_bar)
+    
+    def _on_sort_changed(self, column: int, order: Qt.SortOrder):
+        """Handle sort column/order changes."""
+        self._current_sort_column = column
+        self._current_sort_order = order
+        # Note: Sorting is handled by QTableView when sortingEnabled is True
         
     def refresh_data(self):
         """Fetch data and populate model."""
@@ -205,6 +229,12 @@ class ProjectsView(QWidget):
         self.filtered_projects = projects
         self.model.set_projects(projects)
         self.count_label.setText(f"{len(projects)} projects")
+        
+        # Ensure consistent sort state after loading (data comes pre-sorted from DB)
+        # This syncs the model and header indicator with the DB's default ordering
+        self.model.sort(ProjectsModel.COL_CREATED, Qt.SortOrder.DescendingOrder)
+        self.table.horizontalHeader().setSortIndicator(ProjectsModel.COL_CREATED, Qt.SortOrder.DescendingOrder)
+        
         self.is_loading = False
         self._on_model_data_changed()
 
@@ -240,6 +270,10 @@ class ProjectsView(QWidget):
             self.model.append_projects(projects)
             self.filtered_projects.extend(projects)
             self.count_label.setText(f"{len(self.filtered_projects)} projects")
+            
+            # Re-sort after appending to maintain consistent order
+            self.model.sort(ProjectsModel.COL_CREATED, Qt.SortOrder.DescendingOrder)
+            self.table.horizontalHeader().setSortIndicator(ProjectsModel.COL_CREATED, Qt.SortOrder.DescendingOrder)
         
         self.is_loading = False
 
@@ -251,14 +285,43 @@ class ProjectsView(QWidget):
         # If click on renders column, show renders panel
         if index.column() == ProjectsModel.COL_RENDERS:
             project = index.data(Qt.ItemDataRole.UserRole)
-            if project and project.get('render_count', 0) > 0:
-                self.view_requested.emit(project)  # Show renders panel
+            if project:
+                # Refresh render_count before showing panel (in case it's stale)
+                project_id = project.get('id')
+                if project_id:
+                    from ..scanner.library_scanner import refresh_project_render_count
+                    refreshed = refresh_project_render_count(project_id)
+                    if refreshed:
+                        # Update project dict with fresh data
+                        project.update(refreshed)
+                        # Update model
+                        self.model.set_projects(self.filtered_projects)
+                
+                if project.get('render_count', 0) > 0:
+                    self.view_requested.emit(project)  # Show renders panel
             return
         
         # If click on body, we emit selected.
         if index.column() != ProjectsModel.COL_SELECT:
              project = index.data(Qt.ItemDataRole.UserRole)
              if project:
+                 # Refresh render_count before showing details (in case it's stale)
+                 project_id = project.get('id')
+                 if project_id:
+                     from ..scanner.library_scanner import refresh_project_render_count
+                     refreshed = refresh_project_render_count(project_id)
+                     if refreshed:
+                         # Update project dict with fresh data
+                         project.update(refreshed)
+                         # Update model to reflect changes
+                         row = index.row()
+                         if row < len(self.filtered_projects):
+                             self.filtered_projects[row].update(refreshed)
+                             # Emit dataChanged for this row
+                             top_left = self.model.index(row, ProjectsModel.COL_RENDERS)
+                             bottom_right = self.model.index(row, ProjectsModel.COL_RENDERS)
+                             self.model.dataChanged.emit(top_left, bottom_right, [Qt.ItemDataRole.DisplayRole])
+                 
                  self.project_selected.emit(project)
             
     def _on_filter_changed(self):
@@ -274,6 +337,17 @@ class ProjectsView(QWidget):
             path = project.get('path')
             if validate_path(path, "Project folder", self):
                 open_folder(path)
+    
+    def get_sorted_projects(self) -> List[dict]:
+        """Get projects in current sorted order (for queue building)."""
+        sorted_projects = []
+        for row in range(self.model.rowCount()):
+            index = self.model.index(row, 0)
+            if index.isValid():
+                project = self.model.data(index, Qt.ItemDataRole.UserRole)
+                if project:
+                    sorted_projects.append(project)
+        return sorted_projects
                 
     def _on_open_folder(self, project: dict):
         path = project.get('path')

@@ -67,14 +67,15 @@ def format_timestamp(timestamp: Optional[int]) -> str:
 
 def format_smart_date(timestamp: Optional[float]) -> str:
     """
-    Format timestamp using smart relative dating.
+    Format timestamp using smart relative dating (Windows Explorer style).
     
     < 1 min: "Just now"
     < 1 hr: "5m ago"
     < 24 hr: "2h ago"
     < 7 days: "3d ago"
+    < 30 days: "2w ago" or "Xd ago"
     This year: "Jan 19"
-    Else: "2023" (Year only)
+    Else: "Jan 29 2026" (Month and year)
     """
     if not timestamp:
         return "--"
@@ -91,13 +92,49 @@ def format_smart_date(timestamp: Optional[float]) -> str:
         return f"{int(seconds / 60)}m ago"
     elif seconds < 86400:
         return f"{int(seconds / 3600)}h ago"
-    elif seconds < 604800: # 7 days
+    elif seconds < 604800:  # 7 days
         return f"{int(seconds / 86400)}d ago"
+    elif seconds < 2592000:  # 30 days
+        weeks = int(seconds / 604800)
+        if weeks == 1:
+            return "1 week ago"
+        elif weeks < 4:
+            return f"{weeks} weeks ago"
+        else:
+            return f"{int(seconds / 86400)}d ago"
     
     if dt.year == now.year:
         return dt.strftime("%b %d")
     
-    return dt.strftime("%Y")
+    return dt.strftime("%b %d %Y")
+
+
+def format_absolute_date(timestamp: Optional[float]) -> str:
+    """
+    Format timestamp as absolute date/time (Windows Explorer style).
+    
+    Returns: "27/01/2026 21:51" format
+    """
+    if not timestamp:
+        return "--"
+    
+    try:
+        dt = datetime.fromtimestamp(timestamp)
+        return dt.strftime("%d/%m/%Y %H:%M")
+    except (ValueError, OSError):
+        return "--"
+
+
+def format_date_with_tooltip(timestamp: Optional[float]) -> tuple:
+    """
+    Returns (display_text, tooltip_text) for date display.
+    
+    Display: Relative date ("3d ago", "Jan 19")
+    Tooltip: Exact date ("27/01/2026 21:51")
+    """
+    display = format_smart_date(timestamp)
+    tooltip = format_absolute_date(timestamp)
+    return display, tooltip
 
 
 def open_file(path: str) -> bool:
@@ -274,15 +311,79 @@ class KeyboardShortcut:
 
 
 def setup_logging(debug: bool = False):
-    """Setup application logging."""
-    level = logging.DEBUG if debug else logging.INFO
+    """
+    Setup application logging.
     
-    logging.basicConfig(
-        level=level,
-        format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
-        datefmt='%H:%M:%S',
-    )
+    Logs to both console and a rotating file.
+    """
+    from ..core.config import get_log_path
+    from logging.handlers import RotatingFileHandler
+    
+    level = logging.DEBUG if debug else logging.INFO
+    log_path = get_log_path()
+    
+    # Formatters
+    console_format = '%(asctime)s [%(levelname)s] %(name)s: %(message)s'
+    file_format = '%(asctime)s [%(levelname)s] %(name)s: %(message)s'
+    date_format = '%H:%M:%S'
+    
+    # Root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(level)
+    
+    # Clear existing handlers
+    root_logger.handlers = []
+    
+    # Console Handler
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(logging.Formatter(console_format, datefmt=date_format))
+    root_logger.addHandler(console_handler)
+    
+    # File Handler (Rotating: 1MB max, 3 backups)
+    try:
+        file_handler = RotatingFileHandler(
+            log_path, 
+            maxBytes=1024*1024, 
+            backupCount=3, 
+            encoding='utf-8'
+        )
+        file_handler.setFormatter(logging.Formatter(file_format))
+        root_logger.addHandler(file_handler)
+    except Exception as e:
+        # Fallback if we can't write to log file
+        print(f"Warning: Could not setup file logging: {e}")
     
     # Reduce noise from other libraries
     logging.getLogger('PIL').setLevel(logging.WARNING)
     logging.getLogger('vlc').setLevel(logging.WARNING)
+    logging.getLogger('watchdog').setLevel(logging.WARNING)
+
+
+from contextlib import contextmanager
+
+@contextmanager
+def log_exception(logger_instance: logging.Logger, context_msg: str = "An error occurred"):
+    """
+    Context manager to catch and log exceptions.
+    
+    Usage:
+        with log_exception(logger, "Failed to process file"):
+            process_file(path)
+    """
+    try:
+        yield
+    except Exception as e:
+        logger_instance.error(f"{context_msg}: {e}", exc_info=True)
+
+
+def safe_json_loads(json_str: Optional[str], default=None):
+    """Safely load JSON string, returning default on failure."""
+    import json
+    if not json_str:
+        return default if default is not None else {}
+    try:
+        return json.loads(json_str)
+    except (json.JSONDecodeError, TypeError):
+        return default if default is not None else {}
+
+

@@ -9,6 +9,7 @@ import sys
 import os
 import logging
 import time
+from pathlib import Path
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
@@ -17,7 +18,7 @@ from PySide6.QtWidgets import (
     QGridLayout, QComboBox, QSpinBox, QTextEdit, QFileDialog, QProgressBar,
     QStackedWidget, QSizePolicy, QToolButton, QMenu, QDialog, QDialogButtonBox,
     QFormLayout, QInputDialog, QSpacerItem, QTableWidget, QTableWidgetItem, QHeaderView,
-    QAbstractItemView, QButtonGroup
+    QAbstractItemView, QButtonGroup, QCheckBox, QStyledItemDelegate, QSplashScreen
 )
 from PySide6.QtCore import Qt, QTimer, Signal, QSize, QThread
 from PySide6.QtGui import QIcon, QFont, QColor, QPalette, QAction, QKeySequence, QBrush, QPixmap
@@ -25,9 +26,9 @@ from PySide6.QtGui import QIcon, QFont, QColor, QPalette, QAction, QKeySequence,
 from . import __version__, __app_name__
 from .database import get_db, get_app_data_path, query, execute, get_setting, set_setting
 from .scanner import (
-    ScannerThread, get_all_tracks, get_favorite_tracks, search_tracks,
-    toggle_favorite, get_track_by_id, update_track_metadata, LibraryScanner,
-    AUDIO_EXTENSIONS
+    ScannerThread, get_all_tracks, get_favorite_tracks, get_unified_tracks, search_tracks,
+    sync_tracks_from_renders, toggle_favorite, get_track_by_id, update_track_metadata,
+    LibraryScanner, AUDIO_EXTENSIONS
 )
 from .database.tags import get_all_genres, update_track_tags, add_tag, get_track_tags
 from .ui.dialogs import MetadataEditDialog
@@ -54,7 +55,7 @@ from .waveform import WaveformThread, get_cached_waveform
 from .analysis import AnalyzerThread, format_bpm, format_key, KEYS
 from .utils import (
     format_duration, format_file_size, format_timestamp, format_smart_date,
-    open_file, open_folder, open_fl_studio, count_files_in_folder,
+    format_absolute_date, open_file, open_folder, open_fl_studio, count_files_in_folder,
     get_folder_size, setup_logging, get_icon,
     get_cover_art, get_placeholder_cover
 )
@@ -64,6 +65,21 @@ from .services.folder_watcher import FolderWatcher
 from .services.batch_analyzer import BackgroundBatchAnalyzer
 
 logger = logging.getLogger(__name__)
+
+
+# Delegate for Library track list: DATE column shows human-readable date but sorts by timestamp
+class LibraryTrackListDelegate(QStyledItemDelegate):
+    DATE_COLUMN = 3
+
+    def initStyleOption(self, option, index):
+        super().initStyleOption(option, index)
+        if index.column() == self.DATE_COLUMN:
+            value = index.data(Qt.ItemDataRole.DisplayRole)
+            try:
+                ts = int(value) if value is not None else 0
+                option.text = format_smart_date(ts) if ts else "-"
+            except (TypeError, ValueError):
+                option.text = str(value) if value else "-"
 
 
 # Premium Sky Blue & Slate Theme - Spotify/iTunes level design
@@ -380,6 +396,7 @@ class MainWindow(QMainWindow):
     
     def __init__(self):
         super().__init__()
+        self._navigation_stack = []  # Track navigation history for back button
         self.setWindowTitle(f"{__app_name__} v{__version__}")
         
         # Set window icon
@@ -425,6 +442,37 @@ class MainWindow(QMainWindow):
         
         # Setup Services
         self._setup_services()
+    
+    def go_back(self):
+        """Navigate back to previous page in history."""
+        if not hasattr(self, '_navigation_stack') or not self._navigation_stack:
+            # If no history, go to library as default
+            self.set_page("library", add_to_history=False)
+            return
+        
+        # Pop the last page from history and navigate to it
+        previous_page = self._navigation_stack.pop()
+        self.set_page(previous_page, add_to_history=False)
+    
+    def _get_page_name_for_widget(self, widget) -> str:
+        """Get page name for a widget."""
+        if widget == self.library_view:
+            return "library"
+        elif widget == self.projects_view:
+            return "projects"
+        elif widget == self.playlists_view:
+            return "playlists"
+        elif widget == self.insights_view:
+            return "insights"
+        elif widget == self.plugin_intelligence_view:
+            return "plugin_intelligence"
+        elif widget == self.settings_view:
+            return "settings"
+        elif widget == self.project_panel:
+            return "project_detail"
+        elif widget == self.sample_detail_view:
+            return "sample_detail"
+        return None
     
     def _setup_services(self):
         """Setup background services (Watcher, Analyzer)."""
@@ -726,6 +774,66 @@ class MainWindow(QMainWindow):
         self.search_input.textChanged.connect(self.on_search)
         header_layout.addWidget(self.search_input)
         
+        # Unified view toggle - modern toggle switch style
+        self.unified_view_check = QCheckBox("Unified")
+        self.unified_view_check.setToolTip("Show only the most recent render per project")
+        unified_view_enabled = get_setting('unified_library_view', 'false') == 'true'
+        self.unified_view_check.setChecked(unified_view_enabled)
+        self.unified_view_check.setStyleSheet("""
+            QCheckBox {
+                color: #94a3b8;
+                font-size: 11px;
+                font-weight: 500;
+                spacing: 8px;
+            }
+            QCheckBox::indicator {
+                width: 36px;
+                height: 20px;
+                border-radius: 10px;
+                background: #334155;
+                border: none;
+            }
+            QCheckBox::indicator:checked {
+                background: #38bdf8;
+            }
+            QCheckBox::indicator:hover {
+                background: #475569;
+            }
+            QCheckBox::indicator:checked:hover {
+                background: #7dd3fc;
+            }
+            QCheckBox:hover {
+                color: #f1f5f9;
+            }
+        """)
+        self.unified_view_check.toggled.connect(self._on_unified_view_toggled)
+        header_layout.addWidget(self.unified_view_check)
+        
+        # Global refresh button
+        self.refresh_btn = QPushButton()
+        self.refresh_btn.setIcon(get_icon("refresh", QColor("#94a3b8"), 18))
+        self.refresh_btn.setToolTip("Refresh all data (projects, tracks, plugins, samples)")
+        self.refresh_btn.setFixedSize(36, 36)
+        self.refresh_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(30, 41, 59, 0.5);
+                border: 1px solid #334155;
+                border-radius: 8px;
+                color: #94a3b8;
+            }
+            QPushButton:hover {
+                background: rgba(30, 41, 59, 0.8);
+                border-color: #38bdf8;
+                color: #f1f5f9;
+            }
+            QPushButton:pressed {
+                background: rgba(56, 189, 248, 0.2);
+                border-color: #38bdf8;
+            }
+        """)
+        self.refresh_btn.clicked.connect(self.refresh_all_data)
+        header_layout.addWidget(self.refresh_btn)
+        
         library_layout.addWidget(header_bar)
         
         # === MAIN CONTENT AREA ===
@@ -889,6 +997,7 @@ class MainWindow(QMainWindow):
         self.track_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.track_list.setShowGrid(False)
         self.track_list.setSortingEnabled(True)
+        self.track_list.setItemDelegate(LibraryTrackListDelegate(self.track_list))
         
         self.track_list.cellClicked.connect(self.on_track_clicked)
         self.track_list.cellDoubleClicked.connect(self.on_track_double_clicked_table)
@@ -904,7 +1013,7 @@ class MainWindow(QMainWindow):
         
         # 2. PROJECT VIEW
         self.project_panel = ProjectDrillDownPanel()
-        self.project_panel.back_requested.connect(lambda: self.stack.setCurrentWidget(self.library_view))
+        self.project_panel.back_requested.connect(self.go_back)
         self.project_panel.track_play_requested.connect(self._play_external_file)
         self.project_panel.sample_clicked.connect(self._on_sample_discovery_requested)
         self.stack.addWidget(self.project_panel)
@@ -925,7 +1034,7 @@ class MainWindow(QMainWindow):
         
         # 5. SAMPLE DETAIL VIEW
         self.sample_detail_view = SampleDetailView()
-        self.sample_detail_view.back_requested.connect(self._back_to_insights)
+        self.sample_detail_view.back_requested.connect(self.go_back)
         self.sample_detail_view.sample_play_requested.connect(self._play_external_file)
         self.sample_detail_view.render_play_requested.connect(self._play_external_file)
         self.stack.addWidget(self.sample_detail_view)
@@ -1271,18 +1380,29 @@ class MainWindow(QMainWindow):
             btn.setIconSize(QSize(20, 20))
         return btn
     
-    def set_page(self, page):
+    def set_page(self, page, add_to_history: bool = True):
         """Switch between pages."""
+        # Get current page before switching
+        current_widget = self.stack.currentWidget()
+        current_page = self._get_page_name_for_widget(current_widget)
+        
+        # Add current page to navigation history (unless it's the same page or explicitly disabled)
+        if add_to_history and current_page and current_page != page:
+            if not hasattr(self, '_navigation_stack'):
+                self._navigation_stack = []
+            # Avoid adding duplicates consecutively
+            if not self._navigation_stack or self._navigation_stack[-1] != current_page:
+                self._navigation_stack.append(current_page)
+            # Limit stack size to prevent memory issues
+            if len(self._navigation_stack) > 50:
+                self._navigation_stack.pop(0)
+        
         # Update sidebar button states
         self.nav_home.setChecked(page in ["library", "favorites"])
         self.nav_playlists.setChecked(page == "playlists")
         self.nav_projects.setChecked(page == "projects")
         self.nav_insights.setChecked(page == "insights")
         self.nav_plugin_intel.setChecked(page in ["analytics", "plugin_intelligence"])
-        
-        # Reset states for clean navigation
-        if hasattr(self, 'projects_view'):
-            self.projects_view.reset_state()
             
         if page == "library":
             # Only load if empty to prevent freeze on switch
@@ -1322,7 +1442,6 @@ class MainWindow(QMainWindow):
             self.insights_view.refresh_data()
             self.stack.setCurrentWidget(self.insights_view)
 
-
     def on_system_plugin_scan_requested(self):
         """Trigger a system-wide plugin scan."""
         from .utils.plugin_scanner import scan_system_plugins
@@ -1338,7 +1457,7 @@ class MainWindow(QMainWindow):
                     count = scan_system_plugins()
                     self.finished.emit(count)
                 except Exception as e:
-                    logger.error(f"System plugin scan failed: {e}")
+                    logger.error(f"System plugin scan failed: {e}", exc_info=True)
                     self.finished.emit(0)
                 
         self._plugin_scan_thread = PluginScanThread(self)
@@ -1399,8 +1518,48 @@ class MainWindow(QMainWindow):
     
     def load_tracks(self):
         """Load all tracks from database."""
-        self.tracks_data = get_all_tracks(limit=200) # Reduced from 5000 for performance
+        # Ensure every render has a track so Library view shows all renders (dfdddd, Lmdabza, etc.)
+        try:
+            sync_tracks_from_renders()
+        except Exception as e:
+            logger.error(f"Failed to sync tracks from renders: {e}", exc_info=True)
+        # Check if unified view is enabled
+        unified_view = get_setting('unified_library_view', 'false') == 'true'
+        if unified_view:
+            self.tracks_data = get_unified_tracks(limit=2000)
+        else:
+            self.tracks_data = get_all_tracks(limit=2000)  # Show more tracks, order by file_created_at DESC
         self.update_track_list()
+    
+    def refresh_all_data(self):
+        """Refresh all data: tracks, projects, plugins, and current project panel."""
+        # Refresh tracks
+        self.load_tracks()
+        
+        # Refresh projects view
+        if hasattr(self, 'projects_view'):
+            self.projects_view.refresh_data()
+        
+        # Refresh plugin intelligence view
+        if hasattr(self, 'plugin_intelligence_view'):
+            self.plugin_intelligence_view.refresh()
+        
+        # Refresh project panel if it's currently visible
+        if hasattr(self, 'project_panel') and self.stack.currentWidget() == self.project_panel:
+            # Refresh the current project/track being viewed
+            if self.project_panel.current_track_id:
+                # Refresh track view
+                self.project_panel.set_track(self.project_panel.current_track_id)
+            elif self.project_panel.current_project:
+                # Refresh project view
+                project_id = self.project_panel.current_project.get('project_id')
+                if project_id:
+                    self.project_panel.set_project(project_id)
+    
+    def _on_unified_view_toggled(self, checked: bool):
+        """Handle unified view toggle."""
+        set_setting('unified_library_view', 'true' if checked else 'false')
+        self.load_tracks()
     
     def load_favorites(self):
         """Load favorite tracks."""
@@ -1416,8 +1575,8 @@ class MainWindow(QMainWindow):
         self.volume_slider.setValue(volume)
         self._update_watcher_roots()
         
-        # P13: Trigger rescan when folders might have changed
-        self.rescan_library()
+        # Note: Removed auto-rescan - user must manually click "Rescan Library" button
+        # This prevents unwanted scans when adding folders or changing settings
         
     def update_track_list(self):
         """Update the track list widget."""
@@ -1433,8 +1592,9 @@ class MainWindow(QMainWindow):
             for row, track in enumerate(self.tracks_data):
                 title = track.get('title', 'Unknown')
                 project = track.get('project_name', '')
-                # Use mtime for date added/created
-                date_added = format_smart_date(track.get('mtime', 0))
+                # Use file_created_at (original creation date) for date display, with mtime as fallback
+                created_ts = track.get('file_created_at') or track.get('mtime', 0)
+                date_added = format_smart_date(created_ts)
                 bpm = track.get('bpm_user') or track.get('bpm_detected')
                 key = track.get('key_user') or track.get('key_detected')
                 
@@ -1469,24 +1629,26 @@ class MainWindow(QMainWindow):
                 # proj_item.setForeground(QBrush(QColor("#94a3b8")))
                 self.track_list.setItem(row, 2, proj_item)
                 
-                # 3. Date
-                date_item = QTableWidgetItem(date_added)
+                # 3. Date (file creation date) — store timestamp so sort by date works; delegate shows "14h ago"
+                created_ts_int = int(created_ts) if created_ts else 0
+                date_item = QTableWidgetItem()
+                date_item.setData(Qt.ItemDataRole.DisplayRole, created_ts_int)
                 date_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
                 date_item.setForeground(QBrush(QColor("#94a3b8")))
-                # Tooltip for full date
-                full_date = format_timestamp(track.get('mtime', 0))
-                date_item.setToolTip(f"Added: {full_date}")
+                date_item.setToolTip(f"Created: {format_absolute_date(created_ts)}")
                 self.track_list.setItem(row, 3, date_item)
                 
-                # 4. BPM
-                bpm_item = QTableWidgetItem(bpm_str)
+                # 4. BPM — store number so sort is numeric
+                bpm_val = float(bpm) if bpm else 0
+                bpm_item = QTableWidgetItem()
+                bpm_item.setData(Qt.ItemDataRole.DisplayRole, bpm_val)
                 bpm_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 bpm_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
                 if bpm:
                     bpm_item.setForeground(QBrush(QColor("#38bdf8")))
                     bpm_item.setToolTip(f"{bpm} BPM")
                 else:
-                     bpm_item.setForeground(QBrush(QColor("#475569")))
+                    bpm_item.setForeground(QBrush(QColor("#475569")))
                 self.track_list.setItem(row, 4, bpm_item)
                 
                 # 5. Key
@@ -1665,11 +1827,16 @@ class MainWindow(QMainWindow):
         
         # Handle action column clicks
         if col == 8:  # View Project
+            # Add current page to navigation stack before switching
+            current_widget = self.stack.currentWidget()
+            current_page = self._get_page_name_for_widget(current_widget)
+            if current_page and current_page != "project_detail":
+                if not hasattr(self, '_navigation_stack'):
+                    self._navigation_stack = []
+                if not self._navigation_stack or self._navigation_stack[-1] != current_page:
+                    self._navigation_stack.append(current_page)
+            
             self.project_panel.set_track(track['id'])
-            # self.project_panel.set_project(...) redundant if set_track works, 
-            # and project view might not need explicit set_project if track implies it.
-            # But we added set_project method now, so we CAN use it? 
-            # Actually set_track updates UI perfectly for a track context.
             self.stack.setCurrentWidget(self.project_panel)
             return
         elif col == 9:  # Playlist
@@ -1685,12 +1852,9 @@ class MainWindow(QMainWindow):
             self.edit_metadata()
             return
         
-        # Regular click - update details panel
+        # Regular click - update details panel only (no auto-play)
+        # Double click is required to play
         self.update_details_panel(track)
-        
-        # P12 Fix: Respect auto_play setting on single click
-        if get_setting('auto_play', 'true') == 'true':
-            self.play_track(track)
             
     def on_track_double_clicked_table(self, row, col):
         """Handle table double click."""
@@ -1707,6 +1871,15 @@ class MainWindow(QMainWindow):
         """Open a project subfolder in the integrated Project View."""
         if not self.current_track:
             return
+        
+        # Add current page to navigation stack before switching
+        current_widget = self.stack.currentWidget()
+        current_page = self._get_page_name_for_widget(current_widget)
+        if current_page and current_page != "project_detail":
+            if not hasattr(self, '_navigation_stack'):
+                self._navigation_stack = []
+            if not self._navigation_stack or self._navigation_stack[-1] != current_page:
+                self._navigation_stack.append(current_page)
             
         # Set track and Switch to project view
         self.project_panel.set_track(self.current_track['id'])
@@ -1721,7 +1894,7 @@ class MainWindow(QMainWindow):
         else: # audio/renders
             self.project_panel.tabs.setCurrentIndex(0)
             
-        self.stack.setCurrentIndex(1)
+        self.stack.setCurrentWidget(self.project_panel)
     
     def on_filter_chip_clicked(self):
         """Handle filter chip click."""
@@ -1916,7 +2089,43 @@ class MainWindow(QMainWindow):
         project_id = project.get('id')
         if not project_id: return
         
-        # 1. Find the best track (prefer longest duration > 0 if multiple)
+        # Check if renders table exists
+        try:
+            test_row = query("SELECT name FROM sqlite_master WHERE type='table' AND name='renders'")
+            has_renders_table = len(test_row) > 0
+        except:
+            has_renders_table = False
+        
+        if has_renders_table:
+            # Use renders table directly (more reliable)
+            rows = query("""
+                SELECT r.*, r.path, r.filename as title, r.duration_s as duration, r.ext
+                FROM renders r
+                WHERE r.project_id = ?
+                ORDER BY r.duration_s DESC, r.mtime DESC
+                LIMIT 1
+            """, (project_id,))
+            
+            if rows:
+                render_row = dict(rows[0])
+                # Convert render to track-like dict for play_track
+                track_dict = {
+                    'id': render_row.get('id'),
+                    'path': render_row.get('path'),
+                    'title': render_row.get('title') or Path(render_row.get('path', '')).stem,
+                    'duration': render_row.get('duration') or 0,
+                    'project_id': project_id,
+                    'project_name': project.get('name'),
+                    'ext': render_row.get('ext'),
+                }
+                
+                # Play it
+                self.play_track(track_dict)
+                now = int(time.time())
+                execute("UPDATE projects SET last_played_ts = ?, updated_at = ? WHERE id = ?", (now, now, project_id))
+                return
+        
+        # Fallback: use tracks table (legacy behavior)
         rows = query("""
             SELECT * FROM tracks 
             WHERE project_id = ? AND ext != '.flp'
@@ -1931,7 +2140,7 @@ class MainWindow(QMainWindow):
         track_row = dict(rows[0])
         track_id = track_row.get('id')
         
-        # 2. Play it
+        # Play it
         self.play_track(track_row)
         now = int(time.time())
         execute("UPDATE projects SET last_played_ts = ?, updated_at = ? WHERE id = ?", (now, now, project_id))
@@ -1981,7 +2190,7 @@ class MainWindow(QMainWindow):
             self.play_project_render(project)
 
     def _on_projects_view_play_requested(self, project: dict):
-        """Play a project render - use primary render from renders table if available."""
+        """Play a project render and build queue from sorted projects view."""
         if not project:
             return
         
@@ -1989,34 +2198,95 @@ class MainWindow(QMainWindow):
         if not project_id:
             return
         
-        # Check if renders table exists and has renders
-        try:
-            test_row = query("SELECT name FROM sqlite_master WHERE type='table' AND name='renders'")
-            has_renders_table = len(test_row) > 0
-        except:
-            has_renders_table = False
+        # Build queue from current sorted/filtered projects view
+        sorted_projects = self.projects_view.get_sorted_projects()
+        if not sorted_projects:
+            # Fallback to single play if no sorted list available
+            self.play_project_render(project)
+            return
         
-        if has_renders_table:
-            # Try to get primary render from renders table
-            from .scanner.library_scanner import get_primary_render
-            primary_render = get_primary_render(project_id)
+        # Build queue of best renders for each project in sorted order
+        queue = []
+        target_track = None
+        
+        for p in sorted_projects:
+            p_id = p.get('id')
+            if not p_id:
+                continue
+                
+            # Get best render for this project (prefer renders table, fallback to tracks)
+            try:
+                test_row = query("SELECT name FROM sqlite_master WHERE type='table' AND name='renders'")
+                has_renders_table = len(test_row) > 0
+            except:
+                has_renders_table = False
             
-            if primary_render and primary_render.get('path'):
-                # Play the primary render
-                render_path = primary_render['path']
-                if os.path.exists(render_path):
-                    # Use _play_external_file which accepts a path string
-                    self._play_external_file(render_path)
-                    
-                    # Update last played timestamp
-                    now = int(time.time())
-                    execute("UPDATE projects SET last_played_ts = ?, updated_at = ? WHERE id = ?", 
-                           (now, now, project_id))
-                    self.projects_view.refresh_data()
-                    return
+            track = None
+            if has_renders_table:
+                # Use renders table
+                render_rows = query("""
+                    SELECT r.*, r.path, r.filename as title, r.duration_s as duration, r.ext
+                    FROM renders r
+                    WHERE r.project_id = ?
+                    ORDER BY r.duration_s DESC, r.mtime DESC
+                    LIMIT 1
+                """, (p_id,))
+                
+                if render_rows:
+                    render_row = dict(render_rows[0])
+                    # Convert to track-like dict
+                    track = {
+                        'id': render_row.get('id'),
+                        'path': render_row.get('path'),
+                        'title': render_row.get('title') or Path(render_row.get('path', '')).stem,
+                        'duration': render_row.get('duration') or 0,
+                        'project_id': p_id,
+                        'ext': render_row.get('ext'),
+                    }
+            
+            if not track:
+                # Fallback to tracks table
+                rows = query("""
+                    SELECT * FROM tracks 
+                    WHERE project_id = ? AND ext != '.flp'
+                    ORDER BY duration DESC LIMIT 1
+                """, (p_id,))
+                
+                if rows:
+                    track = dict(rows[0])
+            
+            if track:
+                queue.append(track)
+                if p_id == project_id:
+                    target_track = track
         
-        # Fallback to legacy tracks table
-        self.play_project_render(project)
+        if queue:
+            # Set playlist and play the selected project's track
+            self.player.set_playlist(queue)
+            if target_track:
+                # Find index of target track
+                for i, t in enumerate(queue):
+                    if t.get('id') == target_track.get('id'):
+                        self.player.play_at_index(i)
+                        break
+                else:
+                    # If target not found in queue, it means it wasn't added
+                    # This shouldn't happen, but fallback to first item
+                    logger.warning(f"Target track not found in queue for project {project_id}")
+                    self.player.play_at_index(0)
+            else:
+                # If target not found, don't play anything - show error
+                logger.warning(f"No render found for project {project_id} in queue building")
+                QMessageBox.information(self, "No Render", f"Project '{project.get('name')}' has no audio renders yet.\n\nExport an audio file from FL Studio to enable previews.")
+                return
+            
+            # Update last played timestamp (don't refresh view - it causes UI jump)
+            now = int(time.time())
+            execute("UPDATE projects SET last_played_ts = ?, updated_at = ? WHERE id = ?",
+                   (now, now, project_id))
+        else:
+            # Fallback to single play if no renders found
+            self.play_project_render(project)
 
     def open_project_drill_down(self, project):
         """Show renders panel for a project."""
@@ -2062,6 +2332,15 @@ class MainWindow(QMainWindow):
                 self._renders_dialog = dialog
             else:
                 # Fallback to project drill-down if renders table doesn't exist
+                # Add current page to navigation stack before switching
+                current_widget = self.stack.currentWidget()
+                current_page = self._get_page_name_for_widget(current_widget)
+                if current_page and current_page != "project_detail":
+                    if not hasattr(self, '_navigation_stack'):
+                        self._navigation_stack = []
+                    if not self._navigation_stack or self._navigation_stack[-1] != current_page:
+                        self._navigation_stack.append(current_page)
+                
                 try:
                     self.project_panel.set_project(project_id)
                     self.stack.setCurrentWidget(self.project_panel)
@@ -2147,12 +2426,14 @@ class MainWindow(QMainWindow):
     
     def on_track_changed(self, track):
         """Handle track change."""
-        # Update queue panel first
+        # Queue update
         try:
-            self.queue_panel.set_current_track(track)
-            self.queue_panel.set_queue(self.player.playlist, self.player.playlist_index)
+            if hasattr(self, 'queue_panel'):
+                self.queue_panel.set_current_track(track)
+                if hasattr(self.player, 'playlist'):
+                    self.queue_panel.set_queue(self.player.playlist, self.player.playlist_index)
         except Exception as e:
-            logger.error(f"Error updating queue panel: {e}")
+            logger.error(f"Error updating queue panel: {e}", exc_info=True)
 
         if not track:
             self.player_title.setText("No track playing")
@@ -2191,13 +2472,13 @@ class MainWindow(QMainWindow):
             if track.get('path'):
                 self.mini_waveform.load_waveform(track['path'])
         except Exception as e:
-            logger.error(f"Error loading waveform: {e}")
+            logger.error(f"Error loading waveform: {e}", exc_info=True)
             
         # Highlight the playing row in the table
         try:
             self.highlight_playing_row(track.get('id'))
         except Exception as e:
-            logger.error(f"Error highlighting row: {e}")
+            logger.error(f"Error highlighting row: {e}", exc_info=True)
     
     def highlight_playing_row(self, track_id):
         """Highlight the row of the currently playing track."""
@@ -2545,7 +2826,7 @@ class MainWindow(QMainWindow):
                     res = scanner._scan_project(path)
                     self.finished.emit(res or {})
                 except Exception as e:
-                    logger.error(f"Single scan error: {e}")
+                    logger.error(f"Single scan error: {e}", exc_info=True)
                     self.finished.emit({})
 
         self._single_scan_thread = SingleScanThread(self)
@@ -2622,10 +2903,12 @@ class MainWindow(QMainWindow):
             self.player_title.setText(track.get('title', 'Unknown'))
             self.player_project.setText(track.get('project_name', ''))
             
-            # Highlight in list
-            for i, t in enumerate(self.tracks_data):
-                if t['id'] == track['id']:
-                    self.track_list.selectRow(i)
+            # Highlight in list - use visual row order (respects sorting)
+            track_id = track.get('id')
+            for row in range(self.track_list.rowCount()):
+                item = self.track_list.item(row, 0)
+                if item and item.data(Qt.ItemDataRole.UserRole) == track_id:
+                    self.track_list.selectRow(row)
                     break
             
             # Update details if different
@@ -2991,10 +3274,32 @@ class MainWindow(QMainWindow):
         self.rescan_btn.setEnabled(True)
         self.rescan_btn.setText("Rescan Library")
         self.scan_progress.setVisible(False)
-        self.scan_status.setText(f"{result.projects_found} projects, {result.tracks_found} tracks")
         
-        logger.info(f"Scan complete: {result.projects_found} projects, {result.tracks_found} tracks")
+        # Get accurate count from database to match what's shown in projects view
+        try:
+            db_count = query("SELECT COUNT(*) as count FROM projects")
+            actual_count = db_count[0]['count'] if db_count else result.projects_found
+        except:
+            actual_count = result.projects_found
+        
+        self.scan_status.setText(f"{actual_count} projects, {result.tracks_found} tracks")
+        
+        logger.info(f"Scan complete: {actual_count} projects in database, {result.tracks_found} tracks")
         self.load_tracks()
+        
+        # Refresh projects view to show accurate count and render data
+        if hasattr(self, 'projects_view'):
+            # Force refresh to ensure render_count is up to date
+            self.projects_view.refresh_data()
+            # Also refresh project details panel if a project is selected
+            if hasattr(self, 'project_details_panel') and self.project_details_panel.current_project:
+                project_id = self.project_details_panel.current_project.get('id')
+                if project_id:
+                    from .scanner.library_scanner import refresh_project_render_count
+                    refreshed = refresh_project_render_count(project_id)
+                    if refreshed:
+                        self.project_details_panel.current_project.update(refreshed)
+                        self.project_details_panel.set_project(self.project_details_panel.current_project)
         
         # P12 Fix: Handle auto_analyze
         if result.added_track_ids and get_setting('auto_analyze', 'false') == 'true':
@@ -3050,12 +3355,21 @@ class MainWindow(QMainWindow):
 
     def _navigate_to_sample(self, sample_id):
         """Navigate to Sample Detail view (stable ID contract)."""
+        # Add current page to navigation stack
+        current_widget = self.stack.currentWidget()
+        current_page = self._get_page_name_for_widget(current_widget)
+        if current_page and current_page != "sample_detail":
+            if not hasattr(self, '_navigation_stack'):
+                self._navigation_stack = []
+            if not self._navigation_stack or self._navigation_stack[-1] != current_page:
+                self._navigation_stack.append(current_page)
+        
         self.sample_detail_view.set_sample(sample_id)
         self.stack.setCurrentWidget(self.sample_detail_view)
 
     def _back_to_insights(self):
-        """Navigate back to Insights overview."""
-        self.stack.setCurrentWidget(self.insights_view)
+        """Navigate back to Insights overview (deprecated - use go_back instead)."""
+        self.go_back()
 
     def keyPressEvent(self, event):
         """Keyboard support for navigation."""
@@ -3075,42 +3389,94 @@ def main():
     logger.info(f"Starting {__app_name__} v{__version__}")
     logger.info(f"App data path: {get_app_data_path()}")
     
-    # Initialize database
-    db = get_db()
-    logger.info(f"Database initialized: {db.db_path}")
-    
-    # Create application
+    # Create application first (needed for Splash and Threads)
     app = QApplication(sys.argv)
     app.setApplicationName(__app_name__)
     app.setApplicationVersion(__version__)
     
-    # Set application icon
+    # Set application icon (try before showing splash)
     try:
-        # Try to load icon from resources
         from .utils import get_icon
         app_icon = get_icon("app_icon", None, 256)
         if not app_icon.isNull():
             app.setWindowIcon(app_icon)
         else:
-            # Fallback: try direct path
+            # Fallback path logic
             icon_paths = [
                 os.path.join(os.path.dirname(__file__), "resources", "icons", "app_icon.svg"),
-                os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "FruityWolf_icons", "app_icon.svg"),
-                os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "icon.svg"),
             ]
             for icon_path in icon_paths:
                 if os.path.exists(icon_path):
                     app.setWindowIcon(QIcon(icon_path))
+                    app_icon = QIcon(icon_path)
                     break
     except Exception as e:
-        logger.warning(f"Could not set application icon: {e}")
+        logger.warning(f"Could not set application icon: {e}", exc_info=True)
+        app_icon = QIcon()
+
+    # Create Splash Screen
+    splash_pixmap = QPixmap(400, 300)
+    splash_pixmap.fill(QColor("#0f172a")) # Dark background
     
-    # Create and show main window
-    window = MainWindow()
-    window.show()
+    # Draw Logo on splash if available
+    if not app_icon.isNull():
+        from PySide6.QtGui import QPainter
+        painter = QPainter(splash_pixmap)
+        icon_pixmap = app_icon.pixmap(128, 128)
+        x = (400 - 128) // 2
+        y = (300 - 128) // 2
+        painter.drawPixmap(x, y, icon_pixmap)
+        painter.setPen(QColor("#e2e8f0"))
+        font = painter.font()
+        font.setPointSize(14)
+        font.setBold(True)
+        painter.setFont(font)
+        painter.drawText(0, 250, 400, 30, Qt.AlignmentFlag.AlignCenter, "FruityWolf")
+        painter.end()
+        
+    splash = QSplashScreen(splash_pixmap)
+    splash.showMessage("Initializing database...", Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignCenter, QColor("#94a3b8"))
+    splash.show()
+    app.processEvents()
+
+    # Define Startup Worker
+    class StartupWorker(QThread):
+        finished = Signal(object) # returns db or exception
+        
+        def run(self):
+            try:
+                # This runs migrations which can be slow
+                db = get_db()
+                self.finished.emit(db)
+            except Exception as e:
+                self.finished.emit(e)
+
+    # Startup Logic
+    worker = StartupWorker()
     
-    # Cleanup on exit
-    app.aboutToQuit.connect(db.close)
+    def on_startup_complete(result):
+        if isinstance(result, Exception):
+            QMessageBox.critical(None, "Startup Error", f"Database initialization failed:\n{result}")
+            sys.exit(1)
+        
+        logger.info(f"Database initialized: {result.db_path}")
+        
+        # Create Main Window
+        splash.showMessage("Loading UI...", Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignCenter, QColor("#94a3b8"))
+        try:
+            window = MainWindow()
+            window.show()
+            splash.finish(window)
+            
+            # Keep reference to db closure
+            app.aboutToQuit.connect(result.close)
+        except Exception as e:
+            logger.critical(f"UI Creation Failed: {e}", exc_info=True)
+            QMessageBox.critical(None, "Fatal Error", f"Failed to create main window:\n{e}")
+            sys.exit(1)
+
+    worker.finished.connect(on_startup_complete)
+    worker.start()
     
     return app.exec()
 

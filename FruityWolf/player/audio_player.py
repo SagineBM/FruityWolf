@@ -381,10 +381,16 @@ class AudioPlayer(QObject):
     @Slot(dict)
     def load_track(self, track: dict):
         """Load and play a track."""
-        if not track or 'path' not in track:
+        if not track:
+            return
+            
+        path = track.get('path')
+        if not path:
+            error_msg = "Track path is empty"
+            logger.warning(error_msg)
+            self.error_occurred.emit(error_msg)
             return
         
-        path = track['path']
         if not os.path.exists(path):
             error_msg = f"File not found: {os.path.basename(path)}"
             logger.warning(error_msg)

@@ -1,185 +1,168 @@
-# FruityWolf Roadmap 🐺
+# FruityWolf Roadmap
 
 > **Mission**: Make FruityWolf the tool every FL Studio producer thanks 10 times a day.
 
----
-
-## 🎯 Vision
-
-FruityWolf will become the **definitive open-source library manager** for FL Studio producers by offering features no other tool provides — particularly **deep FLP file intelligence** powered by PyFLP.
+**Last Updated:** 2026-01-29
 
 ---
 
-## 📋 Current Status
+## Vision
 
-| Component                  | Status                       | Notes                           |
-| -------------------------- | ---------------------------- | ------------------------------- |
-| Core Player                | ✅ Complete                  | VLC-based, waveforms, shortcuts |
-| Library Scanner            | ✅ Complete                  | Throttled signals, WAL mode     |
-| Project Classification     | ✅ Complete                  | Lifecycle stages, scoring       |
-| Sample Intelligence        | ✅ Basic                     | Overused/underused detection    |
-| **Deep FLP Parsing** | ✅ Basic - Not very accurate | The game-changer feature        |
-| **Scalability**      | 🟡 Partial                   | Pagination TODO                 |
+FruityWolf is the **definitive open-source library manager** for FL Studio producers, offering features no other tool provides — particularly **deep FLP file intelligence** powered by PyFLP.
 
 ---
 
-## 🚀 Phases
+## Current Status
 
-### Phase 1: Bug Fixes & Stability
-
-**Target**: Immediate
-
-- [ ] Fix "empty path" playback bug
-- [ ] Validate file paths before operations
-- [ ] Graceful handling of missing files
-
----
-
-### Phase 2: PyFLP Integration ⭐ (Game-Changer)
-
-**Target**: Week 1-2
-
-**What it unlocks:**
-
-- See which **plugins** are used in each project
-- Discover **samples** referenced in FLP files
-- Get **BPM/time signature** directly from project
-- Detect **missing plugins/samples**
-
-**Implementation:**
-
-- [ ] Add `pyflp` dependency
-- [ ] Create `FruityWolf/flp_parser/` module
-- [ ] Parse plugins, samples, tempo from FLP
-- [ ] New DB tables: `project_plugins`, `project_flp_samples`
-- [ ] Integrate parsing into scanner
-- [ ] UI: Plugins panel in project details
-
-**Why this matters:**
-
-> "You use Serum in 73% of projects"
-> "This kick sample appears in 42 projects"
-> "Warning: 3 projects need plugins you don't have"
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Core Player | ✅ Complete | VLC-based, waveforms, shortcuts |
+| Library Scanner | ✅ Complete | Throttled signals, WAL mode, batch ops |
+| Project Classification | ✅ Complete | Lifecycle stages, scoring, next actions |
+| Sample Intelligence | ✅ Complete | Overused/underused detection |
+| Deep FLP Parsing | ✅ Complete | Plugins, samples, metadata extraction |
+| Plugin Intelligence | ✅ Complete | Usage tracking, vendor detection |
+| Scalability | ✅ Complete | Model/View, pagination, caching |
+| Documentation | ✅ Complete | Full ecosystem documentation |
+| Testing | 🟡 Partial | ~20% coverage, needs improvement |
+| Distribution | 🟡 Partial | Build works, needs CI/CD |
 
 ---
 
-### Phase 3: Scalability
+## Completed Phases
 
-**Target**: Week 2-3
+### Phase 1: Bug Fixes & Stability ✅
+- [x] Validate file paths (path_utils.py)
+- [x] Graceful handling of missing files
+- [ ] Fix "empty path" playback bug (low priority, remaining)
 
-- [ ] Pagination for ProjectsView (>2000 items)
-- [ ] Database indexes on search columns
-- [ ] Async cover/artwork loading
-- [ ] Virtual scrolling for large lists
+### Phase 2: PyFLP Integration ✅
+- [x] Add pyflp dependency
+- [x] Create `flp_parser/` module
+- [x] Parse plugins (generators + effects)
+- [x] Parse samples referenced in FLP
+- [x] Get BPM/time signature from project
+- [x] New DB tables: `project_plugins`, `project_samples`
+- [x] Integrate parsing into scanner
+- [x] UI: Plugins panel in project details
+- [x] Plugin name normalization
+- [x] Native FL plugin database (~100+ plugins)
+- [x] Third-party vendor detection (40+ vendors)
+- [x] Format detection (VST2, VST3, CLAP, AAX)
 
----
+### Phase 3: Scalability ✅
+- [x] Pagination for ProjectsView (infinite scroll)
+- [x] Database indexes on search columns
+- [x] Model/View pattern (10x faster)
+- [x] Signal throttling (20fps max)
+- [x] WAL mode for concurrency
+- [ ] Async cover loading (high priority)
 
-### Phase 4: Producer Analytics
+### Phase 4: Producer Analytics ✅
+- [x] Plugin Usage Dashboard (PluginIntelligenceView)
+- [x] Sample Hotspots (SampleOverviewView)
+- [x] Project state classification
+- [x] Completion scoring
+- [ ] Missing dependency warnings (planned)
+- [ ] Export reports (planned)
 
-**Target**: Week 3-4
-
-- [ ] **Plugin Usage Dashboard**: Most used plugins across library
-- [ ] **Sample Hotspots**: Find reused samples
-- [ ] **Missing Dependencies**: Warn about unavailable plugins
-- [ ] **Project Templates**: Detect starting point templates
-- [ ] **Export Reports**: PDF/HTML project summaries
-
----
-
-### Phase 5: Open Source Polish
-
-**Target**: Week 4+
-
-- [ ] Theme system (light/dark/custom)
-- [ ] Comprehensive test coverage
-- [ ] Contributor documentation
-- [ ] GitHub Actions CI/CD
-- [ ] Release automation
-- [ ] README with screenshots/GIFs
-
----
-
-## 🔧 Technical Details
-
-### New Module: `flp_parser/`
-
-```
-FruityWolf/flp_parser/
-├── __init__.py      # Exports FLPParser
-├── parser.py        # PyFLP wrapper
-└── models.py        # FLPData dataclass
-```
-
-### Database Schema Additions
-
-```sql
--- Plugins used in projects
-CREATE TABLE project_plugins (
-    id INTEGER PRIMARY KEY,
-    project_id INTEGER REFERENCES projects(id),
-    plugin_name TEXT NOT NULL,
-    plugin_type TEXT,  -- 'generator', 'effect'
-    channel_index INTEGER,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Samples referenced in FLP
-CREATE TABLE project_flp_samples (
-    id INTEGER PRIMARY KEY,
-    project_id INTEGER REFERENCES projects(id),
-    sample_path TEXT NOT NULL,
-    sample_name TEXT,
-    is_missing BOOLEAN DEFAULT FALSE,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Performance indexes
-CREATE INDEX idx_tracks_title ON tracks(title);
-CREATE INDEX idx_tracks_bpm ON tracks(bpm_user);
-CREATE INDEX idx_projects_state ON projects(state);
-```
+### Phase 5: Documentation ✅
+- [x] Complete codebase analysis
+- [x] Feature checklist
+- [x] Workflow system
+- [x] Cursor commands
+- [x] Agent instructions
+- [x] Quick reference guide
 
 ---
 
-## 📦 Dependencies
+## Current Focus
 
-```txt
-# New additions to requirements.txt
-pyflp>=2.0.0  # FLP file parsing (FL 20+ support)
-```
+### Phase 6: Production Polish
+**Priority:** Getting to production-grade quality
+
+#### High Priority
+1. **Async Cover Loading**
+   - Worker pool for image loading
+   - LRU cache with cancellation
+   - Expected: 50-70% faster UI
+
+2. **Error Reporting**
+   - Crash reporting integration
+   - Error logs collection
+   - User feedback system
+
+3. **First-Run Experience**
+   - Welcome wizard
+   - Library setup guide
+   - Tutorial/onboarding
+
+#### Medium Priority
+4. **Light Theme**
+   - QSS theme system
+   - User preference
+
+5. **Test Coverage**
+   - Increase to >80%
+   - Integration tests
+   - UI tests
+
+6. **CI/CD Pipeline**
+   - GitHub Actions
+   - Automated builds
+   - Release automation
 
 ---
 
-## ✅ Progress Tracking
+## Future Phases
 
-Use this section to track implementation:
+### Phase 7: Distribution
+- [ ] Automated installer creation
+- [ ] Auto-updater
+- [ ] Release notes system
+- [ ] Changelog generation
 
-```
-[x] = Completed
-[/] = In Progress  
-[ ] = Not Started
-```
+### Phase 8: Advanced Features
+- [ ] Export/import library
+- [ ] Saved searches
+- [ ] Analytics dashboard
+- [ ] Cloud sync (future)
 
-### Phase 1
-
-- [ ] Bug fix: empty path playback
-
-### Phase 2
-
-- [ ] PyFLP dependency added
-- [ ] flp_parser module created
-- [ ] Database schema updated
-- [ ] Scanner integration
-- [ ] UI plugins panel
+### Phase 9: Accessibility
+- [ ] Screen reader support
+- [ ] Keyboard navigation
+- [ ] High contrast mode
+- [ ] Font size scaling
 
 ---
 
-## 🤝 Contributing
+## Technical Debt
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+| Item | Priority | Notes |
+|------|----------|-------|
+| Split app.py | Medium | 3300+ lines, hard to maintain |
+| Repository pattern | Low | Centralize DB queries |
+| Service layer | Low | Extract from UI |
+| Event bus | Low | Decouple components |
 
 ---
 
-## 📄 License
+## Success Metrics
+
+- **Performance**: Zero-lag scrolling with 10k+ projects
+- **Accuracy**: Correct pairing FLP ↔ renders
+- **Aesthetics**: Modern, polished UI
+- **Stability**: <1% crash rate
+- **Test Coverage**: >80%
+
+---
+
+## Contributing
+
+See `AGENTS.md` for AI agent instructions and `.cursorrules` for project rules.
+
+---
+
+## License
 
 MIT License — Free for all producers!

@@ -20,6 +20,7 @@ from ..scanner import (
     ScannerThread, get_all_tracks, get_favorite_tracks, search_tracks,
     toggle_favorite, get_track_by_id, update_track_metadata, LibraryScanner
 )
+from ..scanner.library_scanner import get_project_renders
 from ..player import get_player, PlayerState, RepeatMode
 from ..waveform import WaveformThread, get_cached_waveform
 from ..analysis import AnalyzerThread, format_bpm, format_key, KEYS
@@ -692,6 +693,7 @@ class Backend(QObject):
         samples_dir = track.get('samples_dir')
         stems_dir = track.get('stems_dir')
         backup_dir = track.get('backup_dir')
+        project_id = track.get('project_id')
         
         audio_exts = {'.wav', '.mp3', '.flac', '.ogg', '.m4a', '.aiff'}
         
@@ -704,7 +706,66 @@ class Backend(QObject):
         details['samples_size'] = format_file_size(get_folder_size(samples_dir)) if samples_dir else '0'
         details['stems_size'] = format_file_size(get_folder_size(stems_dir)) if stems_dir else '0'
         
+        # Add render_count from database (more accurate than file system scan)
+        if project_id:
+            from ..scanner.library_scanner import refresh_project_render_count
+            refreshed = refresh_project_render_count(project_id)
+            if refreshed:
+                details['render_count'] = refreshed.get('render_count', 0)
+                details['renders_count'] = refreshed.get('render_count', 0)  # QML uses renders_count
+                details['project_id'] = project_id  # Ensure project_id is available for QML
+        
         return details
+    
+    @Slot(int, result='QVariant')
+    def getProjectById(self, project_id: int) -> Optional[Dict]:
+        """Get project details by project ID (for QML ProjectPage)."""
+        from ..scanner.library_scanner import refresh_project_render_count
+        project = refresh_project_render_count(project_id)
+        if not project:
+            return None
+        
+        # Format for QML
+        result = {
+            'project_id': project.get('id'),
+            'project_name': project.get('name'),
+            'project_path': project.get('path'),
+            'flp_path': project.get('flp_path'),
+            'audio_dir': project.get('audio_dir'),
+            'samples_dir': project.get('samples_dir'),
+            'stems_dir': project.get('stems_dir'),
+            'backup_dir': project.get('backup_dir'),
+            'render_count': project.get('render_count', 0),
+            'renders_count': project.get('render_count', 0),  # QML uses renders_count
+        }
+        
+        # Count files in subfolders
+        audio_exts = {'.wav', '.mp3', '.flac', '.ogg', '.m4a', '.aiff'}
+        result['audio_count'] = count_files_in_folder(result['audio_dir'], audio_exts) if result['audio_dir'] else 0
+        result['samples_count'] = count_files_in_folder(result['samples_dir'], audio_exts) if result['samples_dir'] else 0
+        result['stems_count'] = count_files_in_folder(result['stems_dir'], audio_exts) if result['stems_dir'] else 0
+        result['backup_count'] = count_files_in_folder(result['backup_dir'], {'.flp'}) if result['backup_dir'] else 0
+        
+        return result
+    
+    @Slot(int, result=list)
+    def getProjectRenders(self, project_id: int) -> List[Dict]:
+        """Get renders for a project from database."""
+        from ..scanner.library_scanner import get_project_renders
+        renders = get_project_renders(project_id)
+        
+        # Format for QML FileListView
+        result = []
+        for render in renders:
+            result.append({
+                'name': render.get('filename') or os.path.basename(render.get('path', '')),
+                'path': render.get('path'),
+                'size': render.get('file_size', 0),
+                'size_formatted': format_file_size(render.get('file_size', 0)),
+                'mtime': render.get('mtime', 0),
+                'duration': render.get('duration_s', 0),
+            })
+        return result
     
     @Slot(str, result=list)
     def getFilesInFolder(self, folder_path: str) -> List[Dict]:

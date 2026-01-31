@@ -12,7 +12,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QIcon, QColor
 
 from ...scanner.library_scanner import get_project_renders, set_primary_render
-from ...utils import get_icon, format_smart_date, open_file
+from ...utils import get_icon, format_smart_date, format_absolute_date, open_file
 from ...database import execute
 import logging
 
@@ -139,10 +139,14 @@ class RendersPanel(QWidget):
             filename_item.setData(Qt.ItemDataRole.UserRole, render['id'])
             self.table.setItem(row, 0, filename_item)
             
-            # Date
-            mtime = render.get('mtime')
-            date_str = format_smart_date(mtime) if mtime else "-"
-            self.table.setItem(row, 1, QTableWidgetItem(date_str))
+            # Date (use file_created_at for creation date, mtime as fallback)
+            created_ts = render.get('file_created_at') or render.get('mtime')
+            date_str = format_smart_date(created_ts) if created_ts else "-"
+            date_item = QTableWidgetItem(date_str)
+            # Add tooltip with exact date/time
+            if created_ts:
+                date_item.setToolTip(f"Created: {format_absolute_date(created_ts)}")
+            self.table.setItem(row, 1, date_item)
             
             # Duration
             duration = render.get('duration_s', 0)

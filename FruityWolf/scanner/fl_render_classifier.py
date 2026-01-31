@@ -1,13 +1,16 @@
 """
 FL Studio Render Classifier
 Correctly identifies renders vs internal audio vs source samples.
+Also provides smart name matching for associating renders with FLP files.
 """
 
 import os
+import re
 import logging
 from pathlib import Path
-from typing import List, Set, Optional, Tuple
+from typing import List, Set, Optional, Tuple, Dict
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 try:
     from ..database import get_setting
 except ImportError:
@@ -235,3 +238,217 @@ def find_source_samples(project_root: Path) -> List[str]:
         logger.warning(f"Permission denied scanning Samples/: {samples_dir}")
     
     return sample_files
+
+
+# =============================================================================
+# Smart Name Matching for Renders <-> FLP Association
+# =============================================================================
+
+# Common render suffixes that should be stripped for matching
+RENDER_SUFFIX_TOKENS = {
+    # Version labels
+    "v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10",
+    "ver", "version",
+    # Final/export labels  
+    "final", "finale", "lekher", "done", "finished",
+    # Mix/master labels
+    "mix", "premix", "master", "mastered", "remaster",
+    # Export/render labels
+    "bounce", "bounced", "export", "exported", "render", "rendered",
+    # Demo/test labels
+    "demo", "test", "draft", "wip", "sketch",
+    # Vocal variations
+    "inst", "instrumental", "acapella", "vocals", "novocals", "no",
+    "with", "without",
+    # Edit types
+    "edit", "radio", "clean", "dirty", "extended", "short",
+    # Common Arabic/French suffixes (for Moroccan producers)
+    "mixe", "finale", "fini",
+}
+
+# Match threshold for associating audio with FLP
+MATCH_THRESHOLD = 0.72
+
+
+def _normalize_name(name: str) -> str:
+    """
+    Normalize a filename for matching.
+    - Lowercase
+    - Remove extension
+    - Replace separators with spaces
+    - Clean up extra whitespace
+    """
+    name = name.lower()
+    # Remove extension
+    name = re.sub(r"\.[a-z0-9]{2,5}$", "", name)
+    # Replace brackets with spaces
+    name = re.sub(r"[\[\]\(\)\{\}]", " ", name)
+    # Replace separators with spaces
+    name = re.sub(r"[-_.]+", " ", name)
+    # Clean up whitespace
+    name = re.sub(r"\s+", " ", name).strip()
+    return name
+
+
+def _tokenize(clean_name: str) -> List[str]:
+    """Split cleaned name into tokens."""
+    return clean_name.split()
+
+
+def _strip_suffix_tokens(tokens: List[str]) -> List[str]:
+    """Remove common render suffix tokens from token list."""
+    result = []
+    for token in tokens:
+        # Skip pure numbers (often appended as _1, _2, etc.)
+        if token.isdigit():
+            continue
+        # Skip known suffix tokens
+        if token in RENDER_SUFFIX_TOKENS:
+            continue
+        # Skip version numbers like v12
+        if re.fullmatch(r"v\d+", token):
+            continue
+        result.append(token)
+    return result
+
+
+def match_audio_to_flp(audio_name: str, flp_name: str) -> float:
+    """
+    Calculate similarity score between an audio filename and an FLP filename.
+    
+    Score is 0.0 to 1.0 based on:
+    - 55% sequence similarity (SequenceMatcher)
+    - 45% token overlap
+    - +15% bonus if audio starts with FLP stem
+    - 50% penalty if core tokens don't overlap (<34%)
+    
+    Args:
+        audio_name: Audio filename (e.g., "MySong_v2_final.wav")
+        flp_name: FLP filename (e.g., "MySong.flp")
+        
+    Returns:
+        Similarity score from 0.0 to 1.0
+        
+    Examples:
+        >>> match_audio_to_flp("MySong_v2_final.wav", "MySong.flp")
+        0.92  # High match - same base name
+        >>> match_audio_to_flp("OtherSong.wav", "MySong.flp")
+        0.15  # Low match - different names
+    """
+    # Normalize names
+    audio_clean = _normalize_name(audio_name)
+    flp_clean = _normalize_name(flp_name)
+    
+    # Tokenize
+    audio_tokens = _tokenize(audio_clean)
+    flp_tokens = _tokenize(flp_clean)
+    
+    # Strip suffix tokens for core comparison
+    audio_core = _strip_suffix_tokens(audio_tokens)
+    flp_core = _strip_suffix_tokens(flp_tokens)
+    
+    if not flp_core:
+        return 0.0
+    
+    # Rebuild strings from core tokens
+    audio_core_str = " ".join(audio_core)
+    flp_core_str = " ".join(flp_core)
+    
+    # 1. Sequence similarity (55% weight)
+    seq_ratio = SequenceMatcher(None, audio_core_str, flp_core_str).ratio()
+    
+    # 2. Token overlap (45% weight)
+    audio_set = set(audio_core)
+    flp_set = set(flp_core)
+    overlap = len(audio_set & flp_set) / max(1, len(flp_set))
+    
+    # 3. Prefix bonus (+15% if audio starts with FLP stem)
+    prefix_bonus = 0.15 if audio_core_str.startswith(flp_core_str) else 0.0
+    
+    # Calculate base score
+    score = 0.55 * seq_ratio + 0.45 * overlap + prefix_bonus
+    
+    # 4. Strong penalty if core tokens don't overlap enough
+    if overlap < 0.34:
+        score *= 0.5
+    
+    return max(0.0, min(1.0, score))
+
+
+def match_renders_in_flat_folder(
+    flp_path: Path, 
+    audio_files: List[Path],
+    threshold: float = MATCH_THRESHOLD
+) -> List[Path]:
+    """
+    Match audio files to an FLP based on name similarity.
+    
+    Args:
+        flp_path: Path to FLP file
+        audio_files: List of audio file paths in the same folder
+        threshold: Minimum score to consider a match (default 0.72)
+        
+    Returns:
+        List of audio file paths that match the FLP, sorted by score (highest first)
+    """
+    scored = []
+    flp_name = flp_path.name
+    
+    for audio_path in audio_files:
+        score = match_audio_to_flp(audio_path.name, flp_name)
+        if score >= threshold:
+            scored.append((score, audio_path))
+    
+    # Sort by score descending
+    scored.sort(reverse=True, key=lambda x: x[0])
+    
+    return [audio_path for score, audio_path in scored]
+
+
+def arbitrate_flat_folder(
+    flp_files: List[Path],
+    audio_files: List[Path],
+    threshold: float = MATCH_THRESHOLD
+) -> Dict[Path, List[Path]]:
+    """
+    Arbitrate render assignments when multiple FLPs exist in same folder.
+    Each audio file is assigned to the highest-scoring FLP only.
+    
+    Args:
+        flp_files: List of FLP file paths
+        audio_files: List of audio file paths
+        threshold: Minimum score to consider a match
+        
+    Returns:
+        Dict mapping each FLP to its matched audio files
+    """
+    # Calculate all scores
+    all_scores: Dict[Path, List[Tuple[float, Path]]] = {flp: [] for flp in flp_files}
+    audio_assignments: Dict[Path, Tuple[float, Path]] = {}  # audio -> (score, best_flp)
+    
+    for audio_path in audio_files:
+        best_score = 0.0
+        best_flp = None
+        
+        for flp_path in flp_files:
+            score = match_audio_to_flp(audio_path.name, flp_path.name)
+            if score >= threshold and score > best_score:
+                best_score = score
+                best_flp = flp_path
+        
+        if best_flp is not None:
+            audio_assignments[audio_path] = (best_score, best_flp)
+    
+    # Build result dict: flp -> list of matched audio
+    result: Dict[Path, List[Path]] = {flp: [] for flp in flp_files}
+    for audio_path, (score, flp) in audio_assignments.items():
+        result[flp].append(audio_path)
+    
+    # Sort each FLP's audio list by score (implied by assignment order, but let's be explicit)
+    for flp in result:
+        # Re-score and sort
+        scored = [(match_audio_to_flp(a.name, flp.name), a) for a in result[flp]]
+        scored.sort(reverse=True, key=lambda x: x[0])
+        result[flp] = [a for s, a in scored]
+    
+    return result

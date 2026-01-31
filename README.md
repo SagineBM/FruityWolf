@@ -34,15 +34,15 @@
 ## Installation
 
 ### From Release (Recommended)
-1. Download `FruityWolf-Setup.exe` from [Releases](../../releases)
+1. Download `FruityWolf-Setup.exe` from [Releases](https://github.com/FruityWolf/FruityWolf/releases)
 2. Run the installer
 3. Launch FruityWolf
 
 ### From Source
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/fl-library-pro.git
-cd fl-library-pro
+git clone https://github.com/FruityWolf/FruityWolf.git
+cd FruityWolf
 
 # Create virtual environment
 python -m venv venv
@@ -73,10 +73,12 @@ The executable will be in `dist/FruityWolf/`.
 
 ## Configuration
 
-App data is stored in `%APPDATA%\FruityWolf\`:
-- `config.json` — User settings
+App data is stored in `%APPDATA%\FruityWolf\` (Windows):
+- `config.json` — User settings (created on first run)
 - `library.db` — Track database
 - `cache/` — Waveform and thumbnail cache
+
+A sample config with safe defaults is provided as [config.sample.json](config.sample.json). See [docs/configuration.md](docs/configuration.md) for options.
 
 ## Keyboard Shortcuts
 
@@ -120,7 +122,7 @@ Press `?` or `F1` in the app to see all shortcuts.
 ## File Structure
 
 ```
-FL Library Pro/
+FruityWolf/
 ├── FruityWolf/
 │   ├── __init__.py
 │   ├── __main__.py
@@ -138,6 +140,14 @@ FL Library Pro/
 ├── build.py
 └── README.md
 ```
+
+## Documentation
+
+See [docs/](docs/) for installation, building, architecture, development, and configuration.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for how to set up a dev environment, run tests, and submit changes. We also have a [Code of Conduct](CODE_OF_CONDUCT.md) and [Security](SECURITY.md) policy.
 
 ## License
 

@@ -181,6 +181,7 @@ class PluginChip(QFrame):
         super().__init__(parent)
         self.plugin_name = plugin_name
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         self.setStyleSheet(f"""
             QFrame {{
                 background: rgba(30, 41, 59, 0.8);
@@ -235,7 +236,7 @@ class PluginsPanel(QWidget):
     
     def _setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(8)
         
         # Header
@@ -250,11 +251,39 @@ class PluginsPanel(QWidget):
         header.addStretch()
         layout.addLayout(header)
         
-        # Plugins container
-        self.plugins_layout = QVBoxLayout()
+        # Scrollable plugins container
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_area.setStyleSheet(f"""
+            QScrollArea {{
+                background: transparent;
+                border: none;
+            }}
+            QScrollBar:vertical {{
+                background: {Colors.BG_DARK};
+                width: 8px;
+                border-radius: 4px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {Colors.BORDER};
+                border-radius: 4px;
+                min-height: 20px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: {Colors.TEXT_MUTED};
+            }}
+        """)
+        
+        # Container widget for plugins
+        plugins_widget = QWidget()
+        self.plugins_layout = QVBoxLayout(plugins_widget)
+        self.plugins_layout.setContentsMargins(0, 0, 0, 0)
         self.plugins_layout.setSpacing(4)
-        layout.addLayout(self.plugins_layout)
-        layout.addStretch()
+        self.plugins_layout.addStretch()  # Push plugins to top
+        
+        scroll_area.setWidget(plugins_widget)
+        layout.addWidget(scroll_area, 1)  # Take remaining space
         
         # Empty state
         self.empty_label = QLabel("No plugins detected")
@@ -297,10 +326,19 @@ class PluginsPanel(QWidget):
         self.empty_label.hide()
         self.count_label.setText(f"{len(plugins)} plugins")
         
+        # Remove the stretch spacer before adding plugins
+        if self.plugins_layout.count() > 0:
+            item = self.plugins_layout.takeAt(self.plugins_layout.count() - 1)
+            if item:
+                self.plugins_layout.removeItem(item)
+        
         for p in plugins:
             chip = PluginChip(p['plugin_name'], p.get('plugin_type', 'effect'), p.get('count', 1))
             chip.clicked.connect(self.plugin_clicked)
             self.plugins_layout.addWidget(chip)
+        
+        # Add stretch back at the end
+        self.plugins_layout.addStretch()
     
     def _show_empty(self):
         self.empty_label.show()
@@ -308,7 +346,8 @@ class PluginsPanel(QWidget):
     
     def clear(self):
         self.project_id = None
-        while self.plugins_layout.count():
+        # Remove all items except the stretch spacer
+        while self.plugins_layout.count() > 1:
             item = self.plugins_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
@@ -458,13 +497,15 @@ class PluginAnalyticsPanel(QWidget):
         self.table.setStyleSheet(TABLE_STYLE)
         self.table.setAlternatingRowColors(False)
         
-        # Column sizing
+        # Column sizing - prevent stretching
         header = self.table.horizontalHeader()
+        header.setStretchLastSection(False)
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)  # Changed from Stretch to Interactive
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
         self.table.setColumnWidth(0, 36)
+        self.table.setColumnWidth(1, 300)  # Set explicit width for plugin name column
         self.table.setColumnWidth(2, 80)
         self.table.setColumnWidth(3, 70)
         

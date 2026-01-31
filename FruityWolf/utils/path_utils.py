@@ -90,3 +90,29 @@ def is_valid_path(path: Optional[str]) -> bool:
     if not path:
         return False
     return os.path.exists(resolve_fl_path(path))
+
+
+def normalize_path(path: str) -> str:
+    """
+    Normalize path for database storage and comparison.
+    
+    Ensures consistent casing and absolute paths, critical for Windows
+    where paths are case-insensitive but database strings are not.
+    """
+    if not path:
+        return ""
+    try:
+        # Resolve user/env vars first
+        p = os.path.expanduser(os.path.expandvars(str(path)))
+        
+        # Make absolute
+        p = os.path.abspath(p)
+        
+        # Normalize case (lower on Windows)
+        p = os.path.normcase(p)
+        
+        return p
+    except Exception:
+        # Fallback to original if something goes wrong (e.g. invalid chars)
+        return str(path)
+

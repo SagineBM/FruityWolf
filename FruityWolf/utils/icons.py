@@ -78,6 +78,9 @@ class IconManager:
             "warning": "warning-svgrepo-com.svg",
             "keyboard": "keyboard-svgrepo-com.svg",
             "plus": "plus-svgrepo-com.svg",
+            "lock": "lock-svgrepo-com.svg",
+            "check": "verified-check-svgrepo-com.svg",
+            "help": "alert-circle-svgrepo-com.svg",
         }
 
     @classmethod

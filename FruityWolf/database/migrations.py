@@ -401,6 +401,214 @@ MIGRATIONS: List[Migration] = [
         ALTER TABLE projects DROP COLUMN primary_render_id;
         DROP TABLE IF EXISTS renders;
         """
+    ),
+    
+    # Migration 18: Enhanced Tracks for All Renders
+    Migration(
+        version=18,
+        description="Add render_id and is_primary to tracks for full render indexing",
+        up_sql="""
+        -- Add render_id to link tracks to renders
+        ALTER TABLE tracks ADD COLUMN render_id INTEGER REFERENCES renders(id);
+        
+        -- Add is_primary flag for quick primary identification
+        ALTER TABLE tracks ADD COLUMN is_primary INTEGER DEFAULT 0;
+        
+        -- Create unique index on render_id to prevent duplicates across rescans
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_tracks_render_id_unique ON tracks(render_id) WHERE render_id IS NOT NULL;
+        
+        -- Add index on project_id for efficient project-based queries
+        CREATE INDEX IF NOT EXISTS idx_tracks_project_id ON tracks(project_id);
+        
+        -- Add index on title for search performance
+        CREATE INDEX IF NOT EXISTS idx_tracks_title ON tracks(title);
+        
+        -- Backfill: Link existing tracks to renders by matching path
+        UPDATE tracks SET render_id = (
+            SELECT r.id FROM renders r WHERE r.path = tracks.path LIMIT 1
+        ) WHERE render_id IS NULL;
+        
+        -- Mark existing tracks as primary if they match project's primary render
+        UPDATE tracks SET is_primary = 1 
+        WHERE render_id IS NOT NULL 
+        AND render_id IN (SELECT primary_render_id FROM projects WHERE primary_render_id IS NOT NULL);
+        """,
+        down_sql="""
+        DROP INDEX IF EXISTS idx_tracks_render_id_unique;
+        DROP INDEX IF EXISTS idx_tracks_project_id;
+        DROP INDEX IF EXISTS idx_tracks_title;
+        """
+    ),
+    
+    # Migration 19: Original File Creation Date
+    Migration(
+        version=19,
+        description="Add file_created_at column for original file creation date sorting",
+        up_sql="""
+        -- Add file_created_at to projects (from FLP or oldest render)
+        ALTER TABLE projects ADD COLUMN file_created_at INTEGER;
+        """,
+        down_sql="""
+        DROP INDEX IF EXISTS idx_projects_file_created;
+        """
+    ),
+    
+    # Migration 20: file_created_at for tracks
+    Migration(
+        version=20,
+        description="Add file_created_at column to tracks for sorting",
+        up_sql="""
+        ALTER TABLE tracks ADD COLUMN file_created_at INTEGER;
+        CREATE INDEX IF NOT EXISTS idx_tracks_file_created ON tracks(file_created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_projects_file_created ON projects(file_created_at DESC);
+        """,
+        down_sql="""
+        DROP INDEX IF EXISTS idx_tracks_file_created;
+        """
+    ),
+    
+    # Migration 21: file_created_at for renders (optional, only if renders table exists)
+    Migration(
+        version=21,
+        description="Add file_created_at column to renders for sorting",
+        up_sql="""
+        ALTER TABLE renders ADD COLUMN file_created_at INTEGER;
+        CREATE INDEX IF NOT EXISTS idx_renders_file_created ON renders(file_created_at DESC);
+        """,
+        down_sql="""
+        DROP INDEX IF EXISTS idx_renders_file_created;
+        """
+    ),
+    
+    # Migration 22: Custom Cover Art Support
+    Migration(
+        version=22,
+        description="Add custom_cover_path to projects table for user-uploaded covers",
+        up_sql="""
+        -- Add custom cover path to projects
+        ALTER TABLE projects ADD COLUMN custom_cover_path TEXT;
+        
+        -- Note: tracks.cover_path and playlists.cover_path already exist
+        -- This migration adds support for project-level custom covers
+        """,
+        down_sql=""
+    ),
+    
+    # Migration 23: Identity System - Project Identity Layer
+    Migration(
+        version=23,
+        description="Add identity system tables and columns for project identity, file tracking, signals, and metadata review",
+        up_sql="""
+        -- Add identity columns to projects table
+        -- Note: SQLite doesn't support UNIQUE constraint in ALTER TABLE ADD COLUMN
+        -- We'll add the column first, then create a unique index
+        ALTER TABLE projects ADD COLUMN pid TEXT;
+        ALTER TABLE projects ADD COLUMN confidence_score INTEGER DEFAULT 100;
+        ALTER TABLE projects ADD COLUMN user_locked INTEGER DEFAULT 0;
+        ALTER TABLE projects ADD COLUMN daw_type TEXT DEFAULT 'fl_studio';
+        
+        -- Create unique index on pid for fast lookups (enforces uniqueness)
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_pid_unique ON projects(pid) WHERE pid IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_projects_pid ON projects(pid);
+        CREATE INDEX IF NOT EXISTS idx_projects_confidence ON projects(confidence_score);
+        CREATE INDEX IF NOT EXISTS idx_projects_user_locked ON projects(user_locked);
+        
+        -- project_files table: Source of truth for all files associated with a project
+        CREATE TABLE IF NOT EXISTS project_files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            file_path TEXT NOT NULL,
+            fingerprint TEXT NOT NULL,
+            file_hash TEXT NULL,
+            file_role TEXT NOT NULL,
+            file_ext TEXT,
+            file_size INTEGER,
+            file_mtime INTEGER,
+            is_primary INTEGER DEFAULT 0,
+            confidence_score INTEGER DEFAULT 100,
+            created_at INTEGER DEFAULT (strftime('%s', 'now')),
+            last_seen INTEGER DEFAULT (strftime('%s', 'now')),
+            UNIQUE(project_id, file_path)
+        );
+        
+        -- Indexes for project_files
+        CREATE INDEX IF NOT EXISTS idx_project_files_project ON project_files(project_id);
+        CREATE INDEX IF NOT EXISTS idx_project_files_role ON project_files(file_role);
+        CREATE INDEX IF NOT EXISTS idx_project_files_fingerprint ON project_files(fingerprint);
+        CREATE INDEX IF NOT EXISTS idx_project_files_path ON project_files(file_path);
+        CREATE INDEX IF NOT EXISTS idx_project_files_primary ON project_files(project_id, is_primary) WHERE is_primary = 1;
+        
+        -- file_signals table: Evidence signals for file matching and attribution
+        CREATE TABLE IF NOT EXISTS file_signals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_id INTEGER NOT NULL REFERENCES project_files(id) ON DELETE CASCADE,
+            signal_type TEXT NOT NULL,
+            signal_value_text TEXT NULL,
+            signal_value_num REAL NULL,
+            weight INTEGER DEFAULT 10,
+            created_at INTEGER DEFAULT (strftime('%s', 'now')),
+            UNIQUE(file_id, signal_type)
+        );
+        
+        -- Indexes for file_signals
+        CREATE INDEX IF NOT EXISTS idx_file_signals_file ON file_signals(file_id);
+        CREATE INDEX IF NOT EXISTS idx_file_signals_type ON file_signals(signal_type);
+        
+        -- metadata_review_queue table: Queue for metadata changes that need user review
+        CREATE TABLE IF NOT EXISTS metadata_review_queue (
+            project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            field TEXT NOT NULL,
+            suggested_value TEXT NOT NULL,
+            confidence INTEGER NOT NULL,
+            created_at INTEGER DEFAULT (strftime('%s', 'now')),
+            PRIMARY KEY (project_id, field)
+        );
+        
+        CREATE INDEX IF NOT EXISTS idx_metadata_review_project ON metadata_review_queue(project_id);
+        
+        -- Generate PIDs for existing projects (if any)
+        -- Using random UUIDs would require Python, so we'll do this in code during migration
+        -- For now, leave pid NULL - it will be populated during first scan
+        """,
+        down_sql="""
+        -- Note: SQLite doesn't support dropping columns easily
+        -- These tables can be dropped if needed, but columns remain
+        DROP TABLE IF EXISTS metadata_review_queue;
+        DROP TABLE IF EXISTS file_signals;
+        DROP TABLE IF EXISTS project_files;
+        DROP INDEX IF EXISTS idx_projects_pid;
+        DROP INDEX IF EXISTS idx_projects_confidence;
+        DROP INDEX IF EXISTS idx_projects_user_locked;
+        """
+    ),
+
+    # Migration 24: Add Missing Performance Indexes
+    Migration(
+        version=24,
+        description="Add missing indexes for optimizing sort and search performance",
+        up_sql="""
+        -- Optimize 'Recently Updated' sort
+        CREATE INDEX IF NOT EXISTS idx_projects_updated_at ON projects(updated_at DESC);
+        
+        -- Optimize 'Completion Score' sort
+        CREATE INDEX IF NOT EXISTS idx_projects_score ON projects(score DESC);
+        
+        -- Optimize render lookups by project and mtime
+        CREATE INDEX IF NOT EXISTS idx_renders_project_mtime ON renders(project_id, mtime DESC);
+        
+        -- Optimize plugin lookups by project
+        CREATE INDEX IF NOT EXISTS idx_project_plugins_project_name ON project_plugins(project_id, plugin_name);
+        
+        -- Optimize file_created_at sort for unified library view
+        CREATE INDEX IF NOT EXISTS idx_tracks_file_created_at_desc ON tracks(file_created_at DESC);
+        """,
+        down_sql="""
+        DROP INDEX IF EXISTS idx_projects_updated_at;
+        DROP INDEX IF EXISTS idx_projects_score;
+        DROP INDEX IF EXISTS idx_renders_project_mtime;
+        DROP INDEX IF EXISTS idx_project_plugins_project_name;
+        DROP INDEX IF EXISTS idx_tracks_file_created_at_desc;
+        """
     )
 ]
 
@@ -455,11 +663,18 @@ class MigrationRunner:
                 except sqlite3.OperationalError as e:
                     error_msg = str(e).lower()
                     # If column already exists, that's okay - continue
-                    if 'duplicate column' in error_msg or 'already exists' in error_msg or 'no such column' not in error_msg:
+                    if 'duplicate column' in error_msg or 'already exists' in error_msg:
                         logger.warning(f"Migration {migration.version}: Column already exists or operation skipped: {e}")
                         # Still mark migration as applied since it's a no-op
-                    else:
+                    elif 'no such column' in error_msg:
+                        # This is a real error - column doesn't exist when it should
+                        logger.error(f"Migration {migration.version}: Column missing error: {e}")
                         raise
+                    else:
+                        # For other errors, try to continue if it's a non-critical issue
+                        # But log it as a warning
+                        logger.warning(f"Migration {migration.version}: Operational error (may be non-critical): {e}")
+                        # Don't raise - let migration continue, but log the issue
             
             # Record migration
             self.connection.execute(

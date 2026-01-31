@@ -6,13 +6,17 @@ Displays detailed information for audio tracks (Library View).
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame,
-    QScrollArea, QGridLayout, QGroupBox, QSizePolicy, QTextEdit
+    QScrollArea, QGridLayout, QGroupBox, QSizePolicy, QTextEdit,
+    QFileDialog, QMenu
 )
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QPixmap, QColor
+from PySide6.QtGui import QPixmap, QColor, QAction
 
 from ...utils import get_icon, format_duration, get_cover_art, get_placeholder_cover, format_file_size
 from ...utils.image_manager import get_image_manager
+from ...services.cover_manager import (
+    save_cover_image, set_track_cover, get_track_cover_path
+)
 
 class TrackDetailsPanel(QWidget):
     """Side panel for displaying Track details."""
@@ -27,6 +31,8 @@ class TrackDetailsPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.current_track = None
+        self.current_cover_path = None
+        self.current_cover_request_id = None
         self.image_manager = get_image_manager()
         self.image_manager.image_loaded.connect(self._on_image_loaded)
         self._setup_ui()
@@ -50,14 +56,39 @@ class TrackDetailsPanel(QWidget):
         self.main_layout.setSpacing(12)
         
         # Cover Art
+        cover_container = QWidget()
+        cover_layout = QVBoxLayout(cover_container)
+        cover_layout.setContentsMargins(0, 0, 0, 0)
+        cover_layout.setSpacing(8)
+        
         self.cover_label = QLabel()
         self.cover_label.setFixedSize(200, 200)
-        # Using border-radius on QLabel usually only clips background, not pixmap.
-        # But let's set it anyway. To clip pixmap, we might need to process the pixmap.
-        # For now, let's bump radius to 12px.
         self.cover_label.setStyleSheet("background-color: #0f172a; border-radius: 12px; border: 1px solid #1e293b;")
         self.cover_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.main_layout.addWidget(self.cover_label, 0, Qt.AlignmentFlag.AlignCenter)
+        self.cover_label.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.cover_label.customContextMenuRequested.connect(self._show_cover_menu)
+        cover_layout.addWidget(self.cover_label, 0, Qt.AlignmentFlag.AlignCenter)
+        
+        self.cover_btn = QPushButton("Change Cover")
+        self.cover_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #1e293b;
+                color: #94a3b8;
+                border: 1px solid #334155;
+                border-radius: 6px;
+                padding: 4px 12px;
+                font-size: 11px;
+            }
+            QPushButton:hover {
+                background-color: #334155;
+                color: #f1f5f9;
+            }
+        """)
+        self.cover_btn.clicked.connect(self._change_cover)
+        self.cover_btn.hide()
+        cover_layout.addWidget(self.cover_btn, 0, Qt.AlignmentFlag.AlignCenter)
+        
+        self.main_layout.addWidget(cover_container, 0, Qt.AlignmentFlag.AlignCenter)
         
         self.main_layout.addSpacing(8)
         
@@ -271,18 +302,28 @@ class TrackDetailsPanel(QWidget):
         else:
              self.btn_open_flp.setToolTip("Project file not found")
             
-        # Cover - Async
+        # Cover - Async loading
+        track_id = track.get('id')
         project_path = track.get('project_path')
-        self.current_cover_path = get_cover_art(project_path)
         
+        # Cancel previous cover request
+        if self.current_cover_request_id:
+            self.image_manager.cancel_request(self.current_cover_request_id)
+        
+        # Get cover path (custom first, then project cover)
+        self.current_cover_path = get_track_cover_path(track_id, project_path) if track_id else get_cover_art(project_path)
+        self.current_cover_request_id = f"track_{track_id}_{project_path}"
+        
+        # Show placeholder immediately
+        self.cover_label.setPixmap(get_placeholder_cover(200, track.get('title', '')))
+        self.cover_btn.show()
+        
+        # Load cover asynchronously
         if self.current_cover_path:
-            pix = self.image_manager.get_image(self.current_cover_path, 200)
+            pix = self.image_manager.get_image(self.current_cover_path, 200, self.current_cover_request_id)
             if pix:
+                # Found in cache, use immediately
                 self.cover_label.setPixmap(pix)
-            else:
-                self.cover_label.setPixmap(get_placeholder_cover(200, track.get('title', '')))
-        else:
-            self.cover_label.setPixmap(get_placeholder_cover(200, track.get('title', '')))
             
         # Info
         self.title_label.setText(track.get('title', 'Unknown Title'))
@@ -352,9 +393,12 @@ class TrackDetailsPanel(QWidget):
     def clear(self):
         """Reset fields."""
         self.current_track = None
+        self.current_cover_path = None
+        self.current_cover_request_id = None
+        self.cover_btn.hide()
         self.title_label.setText("Select a track")
         self.project_label.setText("")
-        self.cover_label.clear()
+        self.cover_label.setPixmap(get_placeholder_cover(200, ""))
         self.bpm_label.setText("--")
         self.key_label.setText("--")
         self.duration_label.setText("--")
@@ -381,8 +425,100 @@ class TrackDetailsPanel(QWidget):
         if self.current_track:
             self.open_flp_clicked.emit(self.current_track)
 
-    def _on_image_loaded(self, path: str, pixmap: QPixmap):
+    def _on_image_loaded(self, path: str, pixmap: QPixmap, request_id: str):
         """Update cover if it matches current track."""
-        if hasattr(self, 'current_cover_path') and path == self.current_cover_path:
+        if request_id == self.current_cover_request_id and path == self.current_cover_path:
             if not pixmap.isNull():
                 self.cover_label.setPixmap(pixmap)
+    
+    def _show_cover_menu(self, pos):
+        """Show context menu for cover."""
+        if not self.current_track:
+            return
+        
+        menu = QMenu(self)
+        
+        change_action = QAction("Change Cover...", self)
+        change_action.triggered.connect(self._change_cover)
+        menu.addAction(change_action)
+        
+        remove_action = QAction("Remove Custom Cover", self)
+        remove_action.triggered.connect(self._remove_cover)
+        menu.addAction(remove_action)
+        
+        menu.exec(self.cover_label.mapToGlobal(pos))
+    
+    def _change_cover(self):
+        """Open file dialog to select new cover image."""
+        if not self.current_track:
+            return
+        
+        track_id = self.current_track.get('id')
+        if not track_id:
+            return
+        
+        # Open file dialog
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Cover Image",
+            "",
+            "Image Files (*.jpg *.jpeg *.png *.webp *.bmp);;All Files (*)"
+        )
+        
+        if not file_path:
+            return
+        
+        try:
+            # Save cover image
+            saved_path = save_cover_image(file_path, 'track', track_id)
+            if saved_path:
+                # Update database
+                if set_track_cover(track_id, saved_path):
+                    # Update UI
+                    self.current_cover_path = saved_path
+                    self.current_cover_request_id = f"track_{track_id}_{saved_path}"
+                    
+                    # Load new cover
+                    pix = self.image_manager.get_image(saved_path, 200, self.current_cover_request_id)
+                    if pix:
+                        self.cover_label.setPixmap(pix)
+                    else:
+                        # Will be loaded async
+                        self.cover_label.setPixmap(get_placeholder_cover(200, self.current_track.get('title', '')))
+                else:
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.error("Failed to update track cover in database")
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Failed to change cover: {e}")
+    
+    def _remove_cover(self):
+        """Remove custom cover and revert to project cover."""
+        if not self.current_track:
+            return
+        
+        track_id = self.current_track.get('id')
+        if not track_id:
+            return
+        
+        try:
+            if set_track_cover(track_id, None):
+                # Reload cover (will use project cover)
+                project_path = self.current_track.get('project_path')
+                self.current_cover_path = get_track_cover_path(track_id, project_path)
+                self.current_cover_request_id = f"track_{track_id}_{project_path}"
+                
+                if self.current_cover_path:
+                    pix = self.image_manager.get_image(self.current_cover_path, 200, self.current_cover_request_id)
+                    if pix:
+                        self.cover_label.setPixmap(pix)
+                    else:
+                        self.cover_label.setPixmap(get_placeholder_cover(200, self.current_track.get('title', '')))
+                else:
+                    self.cover_label.setPixmap(get_placeholder_cover(200, self.current_track.get('title', '')))
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Failed to remove cover: {e}")

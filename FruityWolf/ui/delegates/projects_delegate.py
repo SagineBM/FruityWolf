@@ -50,6 +50,11 @@ class ProjectsDelegate(QStyledItemDelegate):
         if col == ProjectsModel.COL_NEXT_ACTION:
              self._paint_next_action(painter, option, index)
              return
+        
+        # 4. STATE (with confidence/lock indicators)
+        if col == ProjectsModel.COL_STATE:
+            self._paint_state_with_indicators(painter, option, index)
+            return
             
         super().paint(painter, option, index)
         
@@ -175,6 +180,53 @@ class ProjectsDelegate(QStyledItemDelegate):
         else:
             get_icon("fl_studio", QColor("#334155"), 16).paint(painter, flp_rect, Qt.AlignmentFlag.AlignCenter)
             
+        painter.restore()
+    
+    def _paint_state_with_indicators(self, painter: QPainter, option, index):
+        """Paint state column with confidence/lock indicators."""
+        painter.save()
+        
+        project = index.data(Qt.ItemDataRole.UserRole)
+        if not project:
+            super().paint(painter, option, index)
+            painter.restore()
+            return
+        
+        rect = option.rect
+        text = index.data(Qt.ItemDataRole.DisplayRole) or ""
+        
+        # Draw state text
+        text_rect = QRect(rect.x() + 4, rect.y(), rect.width() - 40, rect.height())
+        painter.setPen(QColor("#e2e8f0"))
+        painter.drawText(text_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, text)
+        
+        # Draw indicators on the right (using Unicode symbols for reliability)
+        indicator_x = rect.right() - 36
+        indicator_y = rect.y() + (rect.height() - 16) // 2
+        
+        # Lock indicator (highest priority) - use Unicode pin symbol
+        if project.get('user_locked'):
+            painter.setPen(QColor("#f59e0b"))
+            painter.setFont(QFont("Arial", 12, QFont.Weight.Bold))
+            painter.drawText(QRect(indicator_x, indicator_y, 16, 16), Qt.AlignmentFlag.AlignCenter, "📌")
+            indicator_x -= 20
+        
+        # Confidence indicator - use Unicode symbols
+        confidence = project.get('confidence_score', 100)
+        painter.setFont(QFont("Arial", 12))
+        if confidence >= 80:
+            # High confidence - green check
+            painter.setPen(QColor("#22c55e"))
+            painter.drawText(QRect(indicator_x, indicator_y, 16, 16), Qt.AlignmentFlag.AlignCenter, "✅")
+        elif confidence >= 50:
+            # Medium confidence - yellow warning
+            painter.setPen(QColor("#f59e0b"))
+            painter.drawText(QRect(indicator_x, indicator_y, 16, 16), Qt.AlignmentFlag.AlignCenter, "⚠️")
+        else:
+            # Low confidence - question mark
+            painter.setPen(QColor("#64748b"))
+            painter.drawText(QRect(indicator_x, indicator_y, 16, 16), Qt.AlignmentFlag.AlignCenter, "❓")
+        
         painter.restore()
 
     def editorEvent(self, event: QEvent, model: QAbstractItemModel, option: "QStyleOptionViewItem", index: QModelIndex) -> bool:

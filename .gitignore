@@ -80,3 +80,18 @@ assets/icon.ico
 # Keep directory structure
 !assets/.gitkeep
 !assets/fonts/.gitkeep
+
+# Cursor / AI workflow (do not commit — maintainer-only)
+.cursor/
+.cursorrules
+AGENTS.md
+memory-bank/
+
+# User / local config (app uses %APPDATA%/FruityWolf/config.json at runtime)
+config.json
+
+# Internal implementation notes (maintainer-only)
+docs/internal/
+
+# Audio in icons folder (icons should be SVG/PNG only)
+FruityWolf/resources/icons/*.mp3
