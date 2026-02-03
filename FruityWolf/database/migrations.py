@@ -609,7 +609,80 @@ MIGRATIONS: List[Migration] = [
         DROP INDEX IF EXISTS idx_project_plugins_project_name;
         DROP INDEX IF EXISTS idx_tracks_file_created_at_desc;
         """
-    )
+    ),
+    
+    # Migration 25: Render Status Column
+    Migration(
+        version=25,
+        description="Add render_status column to projects for explicit state tracking",
+        up_sql="""
+        -- render_status: unheard, rendering, preview_ready, render_failed
+        ALTER TABLE projects ADD COLUMN render_status TEXT DEFAULT 'unheard';
+        CREATE INDEX IF NOT EXISTS idx_projects_render_status ON projects(render_status);
+        """,
+        down_sql="""
+        DROP INDEX IF EXISTS idx_projects_render_status;
+        """
+    ),
+    
+    # Migration 26: Activity Heat and Safety Signals
+    Migration(
+        version=26,
+        description="Add Activity Heat, Audibility, and Safety columns",
+        up_sql="""
+        -- Tracking columns for Activity Heat
+        ALTER TABLE projects ADD COLUMN last_opened_at INTEGER;
+        ALTER TABLE projects ADD COLUMN open_count INTEGER DEFAULT 0;
+        ALTER TABLE projects ADD COLUMN play_count INTEGER DEFAULT 0;
+        
+        -- Tracking columns for Safety/Rendering History
+        ALTER TABLE projects ADD COLUMN last_rendered_at INTEGER;
+        ALTER TABLE projects ADD COLUMN render_attempted_count INTEGER DEFAULT 0;
+        ALTER TABLE projects ADD COLUMN last_render_failed_at INTEGER;
+        ALTER TABLE projects ADD COLUMN last_render_failed_reason TEXT;
+        
+        -- Backfill last_rendered_at from renders table (best effort)
+        UPDATE projects 
+        SET last_rendered_at = (
+            SELECT MAX(r.mtime) 
+            FROM renders r 
+            WHERE r.project_id = projects.id
+        )
+        WHERE last_rendered_at IS NULL;
+        
+        -- Index for sorting/filtering
+        CREATE INDEX IF NOT EXISTS idx_projects_last_opened ON projects(last_opened_at DESC);
+        """,
+        down_sql="""
+        DROP INDEX IF EXISTS idx_projects_last_opened;
+        """
+    ),
+    
+    # Migration 27: Plugin Alias Overrides
+    Migration(
+        version=27,
+        description="Add plugin_alias_overrides table for user-defined plugin matching",
+        up_sql="""
+        CREATE TABLE IF NOT EXISTS plugin_alias_overrides (
+            ref_key TEXT PRIMARY KEY, -- lower(ref_raw)|ref_type
+            ref_raw TEXT NOT NULL,
+            ref_canon TEXT,
+            ref_type TEXT,
+            chosen_installed_id INTEGER,
+            created_at INTEGER DEFAULT (strftime('%s', 'now')),
+            FOREIGN KEY(chosen_installed_id) REFERENCES installed_plugins(id) ON DELETE CASCADE
+        );
+        """,
+        down_sql="""
+        DROP TABLE IF EXISTS plugin_alias_overrides;
+        """
+    ),
+    Migration(
+        version=28,
+        description="Index installed_plugins(is_active) for plugin truth-state and safe-to-open queries",
+        up_sql="CREATE INDEX IF NOT EXISTS idx_installed_plugins_is_active ON installed_plugins(is_active) WHERE is_active = 1;",
+        down_sql="DROP INDEX IF EXISTS idx_installed_plugins_is_active;"
+    ),
 ]
 
 

@@ -16,6 +16,9 @@ from ..database import execute
 
 logger = logging.getLogger(__name__)
 
+# Log librosa fallback warning only once per type (avoids log spam when scanning many files)
+_librosa_warned = set()
+
 # Minimum duration for reliable analysis (in seconds)
 MIN_DURATION_FOR_BPM = 3.0  # Need at least 3 seconds for BPM
 MIN_DURATION_FOR_KEY = 2.0  # Need at least 2 seconds for key
@@ -200,7 +203,9 @@ def analyze_bpm_librosa(audio_path: str) -> Tuple[Optional[float], Optional[floa
         return round(float(tempo), 1), round(float(confidence), 2)
         
     except ImportError:
-        logger.warning("librosa not available, using simple BPM detection")
+        if "bpm" not in _librosa_warned:
+            _librosa_warned.add("bpm")
+            logger.debug("librosa not available, using simple BPM detection")
         return analyze_bpm_simple(audio_path)
     except Exception as e:
         logger.debug(f"librosa BPM detection failed: {e}")
@@ -390,7 +395,9 @@ def analyze_key_librosa(audio_path: str) -> Tuple[Optional[str], Optional[float]
         return best[0], round(float(confidence), 2)
         
     except ImportError:
-        logger.warning("librosa not available, using simple key detection")
+        if "key" not in _librosa_warned:
+            _librosa_warned.add("key")
+            logger.debug("librosa not available, using simple key detection")
         return analyze_key_simple(audio_path)
     except Exception as e:
         logger.debug(f"librosa key detection failed: {e}")

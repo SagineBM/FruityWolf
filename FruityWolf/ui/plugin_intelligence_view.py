@@ -71,7 +71,7 @@ class PluginIntelligenceView(QWidget):
         
         title_section.addLayout(title_row)
         
-        subtitle = QLabel("Analyze your VST arsenal, track dependencies, and optimize your workflow")
+        subtitle = QLabel("See which projects are safe to open and why others might break")
         subtitle.setStyleSheet(f"color: {DesignTokens.TEXT_SECONDARY}; font-size: 14px;")
         title_section.addWidget(subtitle)
         

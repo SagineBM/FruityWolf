@@ -24,7 +24,7 @@ from PySide6.QtCore import Qt, QTimer, Signal, QSize, QThread
 from PySide6.QtGui import QIcon, QFont, QColor, QPalette, QAction, QKeySequence, QBrush, QPixmap
 
 from . import __version__, __app_name__
-from .database import get_db, get_app_data_path, query, execute, get_setting, set_setting
+from .database import get_db, get_app_data_path, query, execute, get_setting, set_setting, query_one
 from .scanner import (
     ScannerThread, get_all_tracks, get_favorite_tracks, get_unified_tracks, search_tracks,
     sync_tracks_from_renders, toggle_favorite, get_track_by_id, update_track_metadata,
@@ -40,7 +40,7 @@ from .ui import (
     StatusBadge, CommandPaletteDialog, SettingsView
 )
 from .ui.style import get_stylesheet
-from .ui.panels.plugins_panel import PluginAnalyticsPanel, PluginsPanel
+from .ui.panels.plugins_panel import PluginAnalyticsPanel, PluginsPanel, wait_for_plugin_load_threads
 from .ui.panels.plugin_details import PluginDetailsPanel
 from .ui.projects_view import ProjectsView
 from .ui.sample_overview_view import SampleOverviewView
@@ -63,6 +63,12 @@ from .utils.path_utils import validate_path, resolve_fl_path
 from .utils.shortcuts import ShortcutManager, DEFAULT_SHORTCUTS
 from .services.folder_watcher import FolderWatcher
 from .services.batch_analyzer import BackgroundBatchAnalyzer
+
+# Rendering Engine Imports
+from .rendering.engine import get_render_queue, RenderJob
+from .rendering.backup_exclusion import is_eligible_flp
+from .rendering.fl_cli import resolve_fl_executable
+from .ui.render_dialogs import RenderProgressDialog
 
 logger = logging.getLogger(__name__)
 
@@ -1165,6 +1171,7 @@ class MainWindow(QMainWindow):
         self.project_details_panel = ProjectDetailsPanel()
         self.project_details_panel.open_folder_clicked.connect(self.open_project_folder_path)
         self.project_details_panel.open_flp_clicked.connect(self.open_flp)
+        self.project_details_panel.project_updated.connect(self._on_project_render_completed)
         self.details_stack.addWidget(self.project_details_panel)
         
         # 3. Sample Discovery Panel
@@ -1570,7 +1577,16 @@ class MainWindow(QMainWindow):
         """Handle settings changes."""
         self.update_track_list()
         # Update player if needed
-        volume = int(get_setting('volume', '80'))
+        vol_str = get_setting('volume', '80')
+        try:
+            vol_float = float(vol_str)
+            if vol_float <= 1.0:
+                volume = int(vol_float * 100)
+            else:
+                volume = int(vol_float)
+        except (ValueError, TypeError):
+            volume = 80
+            
         self.player.volume = volume / 100.0
         self.volume_slider.setValue(volume)
         self._update_watcher_roots()
@@ -1968,6 +1984,59 @@ class MainWindow(QMainWindow):
         track = item.data(Qt.ItemDataRole.UserRole)
         self.current_track = track
         self.play_track(track)
+
+    def _on_project_render_completed(self, project_id: int):
+        """After successful render: scan the project folder so the new file is in DB, then refresh UI."""
+        from .scanner.library_scanner import refresh_project_render_count
+        refreshed = refresh_project_render_count(project_id)
+        if not refreshed:
+            return
+        folder = refreshed.get('path') or (
+            os.path.dirname(refreshed.get('flp_path') or '') if refreshed.get('flp_path') else None
+        )
+        if folder and os.path.isdir(folder):
+            self._run_single_folder_scan_after_render(Path(folder), project_id)
+        else:
+            self._refresh_project_after_render(project_id)
+
+    def _run_single_folder_scan_after_render(self, folder_path: Path, project_id: int):
+        """Run a single-folder scan in background, then refresh project in UI."""
+        class SingleScanThread(QThread):
+            finished = Signal(dict)
+            def run(self):
+                try:
+                    from .scanner.library_scanner import LibraryScanner
+                    scanner = LibraryScanner()
+                    res = scanner._scan_project(folder_path)
+                    self.finished.emit(res or {})
+                except Exception as e:
+                    logger.error(f"Single folder scan after render: {e}", exc_info=True)
+                    self.finished.emit({})
+        thread = SingleScanThread(self)
+        thread.finished.connect(lambda _: self._on_render_folder_scan_finished(project_id))
+        thread.start()
+        self._render_scan_thread = thread
+
+    def _on_render_folder_scan_finished(self, project_id: int):
+        """Refresh project details and list row after single-folder scan (post-render)."""
+        self._render_scan_thread = None
+        from .scanner.library_scanner import refresh_project_render_count
+        refreshed = refresh_project_render_count(project_id)
+        if not refreshed:
+            return
+        if hasattr(self, 'projects_view') and self.projects_view.model:
+            self.projects_view.model.update_project(project_id, refreshed)
+        self.project_details_panel.set_project(refreshed)
+
+    def _refresh_project_after_render(self, project_id: int):
+        """Refresh project in UI when no folder scan (e.g. path unknown)."""
+        from .scanner.library_scanner import refresh_project_render_count
+        refreshed = refresh_project_render_count(project_id)
+        if not refreshed:
+            return
+        if hasattr(self, 'projects_view') and self.projects_view.model:
+            self.projects_view.model.update_project(project_id, refreshed)
+        self.project_details_panel.set_project(refreshed)
     
     def update_details_panel(self, item_data):
         """Update the details panel with track OR project info."""
@@ -2046,6 +2115,36 @@ class MainWindow(QMainWindow):
         if not validate_path(path, "Track", self, project_path=project_path):
             return
 
+        # Update DB stats (Plays) - Centralized logic
+        try:
+            # We use try/except to prevent DB errors from blocking playback
+            # Only update if we have an ID
+            project_id = track.get('project_id')
+            track_id = track.get('id')
+            
+            # Simple timestamp
+            import time
+            now = int(time.time())
+            
+            # Update Project stats
+            if project_id:
+                # Increment play_count and update last_played_ts
+                execute(
+                    "UPDATE projects SET last_played_ts = ?, play_count = COALESCE(play_count, 0) + 1, updated_at = ? WHERE id = ?",
+                    (now, now, project_id)
+                )
+            
+            # Update Track stats
+            if track_id:
+                # Increment play_count and update last_played
+                execute(
+                    "UPDATE tracks SET play_count = play_count + 1, last_played = ?, updated_at = ? WHERE id = ?",
+                    (now, now, track_id)
+                )
+                
+        except Exception as e:
+            logger.error(f"Failed to update play stats in DB: {e}")
+
         # Build playlist from visual table order (respects sorting)
         visual_tracks = []
         for row in range(self.track_list.rowCount()):
@@ -2068,20 +2167,53 @@ class MainWindow(QMainWindow):
         target = track_or_path or self.current_track
         
         path = None
+        project_id = None
+        
         if isinstance(target, str):
             path = target
+            # Try to resolve project_id from path
+            try:
+                row = query_one("SELECT id FROM projects WHERE flp_path = ?", (path,))
+                if row:
+                    project_id = row['id']
+            except: pass
         elif isinstance(target, dict):
             path = target.get('flp_path')
+            project_id = target.get('id') if target.get('flp_path') else target.get('project_id')
             
         if validate_path(path, "FLP", self):
             fl_path = get_setting('fl_studio_path', '')
             open_fl_studio(path, fl_path if fl_path else None)
+            
+            # Update Activity Heat
+            if project_id:
+                try:
+                    now = int(time.time())
+                    execute(
+                        "UPDATE projects SET last_opened_at = ?, open_count = COALESCE(open_count, 0) + 1, updated_at = ? WHERE id = ?", 
+                        (now, now, project_id)
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to update activity heat on open: {e}")
     
     def open_project_folder(self):
         """Open the project folder."""
         path = self.current_track.get('project_path') if self.current_track else None
+        project_id = self.current_track.get('project_id') if self.current_track else None
+        
         if validate_path(path, "Project folder", self):
             open_folder(path)
+            
+            # Update Activity Heat
+            if project_id:
+                try:
+                    now = int(time.time())
+                    execute(
+                        "UPDATE projects SET last_opened_at = ?, open_count = COALESCE(open_count, 0) + 1, updated_at = ? WHERE id = ?", 
+                        (now, now, project_id)
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to update activity heat on open folder: {e}")
 
     def play_project_render(self, project: dict):
         """Find the best render for a project and play it."""
@@ -2121,8 +2253,7 @@ class MainWindow(QMainWindow):
                 
                 # Play it
                 self.play_track(track_dict)
-                now = int(time.time())
-                execute("UPDATE projects SET last_played_ts = ?, updated_at = ? WHERE id = ?", (now, now, project_id))
+                # DB update now handled in play_track
                 return
         
         # Fallback: use tracks table (legacy behavior)
@@ -2142,10 +2273,7 @@ class MainWindow(QMainWindow):
         
         # Play it
         self.play_track(track_row)
-        now = int(time.time())
-        execute("UPDATE projects SET last_played_ts = ?, updated_at = ? WHERE id = ?", (now, now, project_id))
-        if track_id:
-            execute("UPDATE tracks SET play_count = play_count + 1, last_played = ?, updated_at = ? WHERE id = ?", (now, now, track_id))
+        # DB update now handled in play_track
 
     def _on_plugin_project_play_requested(self, project: dict):
         """Play a project render and set up a queue of all projects in the plugin list."""
@@ -2373,7 +2501,40 @@ class MainWindow(QMainWindow):
 
     def open_project_folder_path(self, path):
         """Open project folder by path."""
-        open_folder(path)
+        # Try to parse project_id from path if possible, or accept dict if passed
+        project_id = None
+        if isinstance(path, dict):
+            # This handles the new signal from ProjectDetailsPanel
+            project = path
+            path = project.get('path') or (
+                os.path.dirname(project.get('flp_path') or '') if project.get('flp_path') else None
+            )
+            project_id = project.get('id')
+        
+        if validate_path(path, "Project folder", self):
+            open_folder(path)
+            
+            # Update Activity Heat
+            if project_id:
+                try:
+                    now = int(time.time())
+                    execute(
+                        "UPDATE projects SET last_opened_at = ?, open_count = COALESCE(open_count, 0) + 1, updated_at = ? WHERE id = ?", 
+                        (now, now, project_id)
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to update activity heat on open folder path: {e}")
+            elif path:
+                # Try to look up by path if ID not provided
+                try:
+                    now = int(time.time())
+                    # Use normalized path matching if possible, or exact
+                    execute(
+                        "UPDATE projects SET last_opened_at = ?, open_count = COALESCE(open_count, 0) + 1, updated_at = ? WHERE path = ?", 
+                        (now, now, path)
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to update activity heat by path: {e}")
     
     def _on_plugin_filter_requested(self, plugin_name):
         """Handle plugin click from analytics dashboard."""
@@ -2782,18 +2943,19 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Busy", "A scan is already in progress.")
             return
             
-        # Get path
-        from .scanner.library_scanner import get_all_projects
-        # This is inefficient, should use get_project_by_id logic or similar
-        # But we don't have a direct helper exposed in app imports easily
-        # Let's direct query or reuse scanner logic
+        # Get path (folder); fallback to dirname(flp_path) when path is empty
         from .database import query_one
         
-        row = query_one("SELECT path FROM projects WHERE id = ?", (project_id,))
+        row = query_one("SELECT path, flp_path FROM projects WHERE id = ?", (project_id,))
         if not row:
             return
-            
-        path = Path(row['path'])
+        
+        path_str = row.get('path') or (
+            os.path.dirname(row.get('flp_path') or '') if row.get('flp_path') else None
+        )
+        if not path_str:
+            return
+        path = Path(path_str)
         if not path.exists():
             QMessageBox.warning(self, "Error", "Project path no longer exists.")
             return
@@ -3027,6 +3189,14 @@ class MainWindow(QMainWindow):
         self.player.cleanup()
         if self.scanner_thread:
             self.scanner_thread.cancel()
+        # Wait for plugin list load threads (Plugin Intelligence) so they are not destroyed while running
+        wait_for_plugin_load_threads(5000)
+        # Don't destroy plugin scan thread while still running (avoids "QThread: Destroyed while thread is still running")
+        if getattr(self, "_plugin_scan_thread", None) is not None and self._plugin_scan_thread.isRunning():
+            self._plugin_scan_thread.quit()
+            if not self._plugin_scan_thread.wait(5000):
+                self._plugin_scan_thread.terminate()
+                self._plugin_scan_thread.wait(1000)
         event.accept()
     
     def show_track_context_menu(self, pos):
@@ -3224,7 +3394,82 @@ class MainWindow(QMainWindow):
         rescan_action = QAction("Rescan Library", self)
         rescan_action.triggered.connect(self.rescan_library)
         tools_menu.addAction(rescan_action)
+
+        # Render Folder
+        tools_menu.addSeparator()
+        render_action = QAction("Render folder...", self)
+        render_action.triggered.connect(self._on_render_folder_action)
+        tools_menu.addAction(render_action)
         
+    def _on_render_folder_action(self):
+        """Handle batch render request."""
+        # 1. Check FL Path
+        if not resolve_fl_executable():
+            QMessageBox.warning(self, "FL Studio Not Found", "Please configure FL Studio path in Settings.")
+            return
+
+        # 2. Select Folder
+        folder = QFileDialog.getExistingDirectory(self, "Select Folder to Render")
+        if not folder:
+            return
+            
+        folder_path = Path(folder)
+        
+        # 3. Scan for FLPs
+        flp_files = []
+        skipped_backups = 0
+        
+        # Show busy cursor
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            for root, dirs, files in os.walk(folder_path):
+                for f in files:
+                    if f.lower().endswith('.flp'):
+                        p = Path(root) / f
+                        if is_eligible_flp(p):
+                            flp_files.append(p)
+                        else:
+                            skipped_backups += 1
+        finally:
+            QApplication.restoreOverrideCursor()
+            
+        if not flp_files:
+            QMessageBox.information(
+                self, 
+                "No Projects Found", 
+                f"No eligible FLP files found in selected folder.\n(Skipped {skipped_backups} backups)"
+            )
+            return
+            
+        # 4. Confirmation
+        msg = (
+            f"Found {len(flp_files)} projects to render.\n"
+            f"Skipped {skipped_backups} backup/autosave files.\n\n"
+            "This will render a preview (MP3) for each project into its own folder.\n"
+            "Existing previews will be overwritten.\n\n"
+            "WARNING: This process will open FL Studio for each project.\n"
+            "Do not interact with FL Studio while it runs.\n\n"
+            "Proceed?"
+        )
+        
+        if QMessageBox.question(self, "Batch Render", msg) != QMessageBox.StandardButton.Yes:
+            return
+            
+        # 5. Build Queue
+        queue = get_render_queue()
+        
+        for p in flp_files:
+            job = RenderJob(source_flp=p, job_type='audio', format_type='mp3')
+            queue.add_job(job)
+            
+        # 6. Show Progress UI
+        # We store reference to prevent GC
+        self.render_progress = RenderProgressDialog(len(flp_files), self)
+        self.render_progress.show()
+        
+        # Start
+        queue.start_queue()
+
     def show_batch_analysis(self):
         """Show batch analysis dialog for all tracks."""
         # Get all track IDs

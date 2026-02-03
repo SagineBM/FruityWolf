@@ -1,8 +1,8 @@
 """
-Enhanced Plugins Panel - Optimized Version
+Plugin Analytics Panel — Phase 1 Control Room
 
-Professional plugin analytics dashboard for producers.
-Uses QTableWidget for performance instead of custom widgets.
+Unified plugin list with truth state (Safe/Risky/Missing/Unknown/Unused).
+Studio Mode chips: Studio, Missing, Risky, Hot, Last 30 days, All.
 """
 
 import logging
@@ -11,15 +11,46 @@ from typing import List, Dict, Optional
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
-    QPushButton, QScrollArea, QLineEdit, QGridLayout, QSizePolicy
+    QTableView, QListView, QPushButton, QScrollArea, QLineEdit, QCheckBox, QButtonGroup,
+    QSizePolicy, QStyleOptionViewItem, QStyledItemDelegate,
 )
-from PySide6.QtCore import Qt, Signal, QTimer
-from PySide6.QtGui import QColor
+from PySide6.QtCore import Qt, Signal, QTimer, QThread, QAbstractTableModel, QAbstractListModel, QModelIndex, QSize
+from PySide6.QtGui import QColor, QPainter
 
 from ...database import query
-from ...utils import get_icon
+from ...utils import get_icon, format_smart_date
+from ...utils.plugin_scanner import (
+    get_plugin_truth_states,
+    PLUGIN_STATE_SAFE,
+    PLUGIN_STATE_RISKY,
+    PLUGIN_STATE_MISSING,
+    PLUGIN_STATE_UNKNOWN,
+    PLUGIN_STATE_UNUSED,
+)
 
 logger = logging.getLogger(__name__)
+
+# Keep load threads alive until they finish so they are never destroyed while running
+# (avoids "QThread: Destroyed while thread is still running" on tab switch or app close).
+_active_load_threads = set()
+
+# Cache of last full plugin list by name (lower) -> row. Filled when main list loads.
+# Read by Plugin Details worker to avoid recomputing full get_plugin_truth_states on click.
+_plugin_state_cache = {}
+
+
+def get_cached_plugin_state(plugin_name: str) -> Optional[Dict]:
+    """Return cached truth-state row for this plugin if the main list was recently loaded."""
+    if not plugin_name or not isinstance(plugin_name, str):
+        return None
+    return _plugin_state_cache.get((plugin_name or "").strip().lower())
+
+
+def wait_for_plugin_load_threads(timeout_ms: int = 5000) -> None:
+    """Wait for any running plugin list load threads. Call from main window closeEvent."""
+    for t in list(_active_load_threads):
+        if t.isRunning():
+            t.wait(timeout_ms)
 
 
 # =============================================================================
@@ -45,7 +76,7 @@ class Colors:
 
 
 TABLE_STYLE = f"""
-    QTableWidget {{
+    QTableView, QTableWidget {{
         background-color: {Colors.BG_CARD};
         border: 1px solid {Colors.BORDER};
         border-radius: 8px;
@@ -53,14 +84,14 @@ TABLE_STYLE = f"""
         color: {Colors.TEXT_PRIMARY};
         selection-background-color: rgba(56, 189, 248, 0.15);
     }}
-    QTableWidget::item {{
+    QTableView::item, QTableWidget::item {{
         padding: 10px 8px;
         border-bottom: 1px solid rgba(51, 65, 85, 0.3);
     }}
-    QTableWidget::item:selected {{
+    QTableView::item:selected, QTableWidget::item:selected {{
         background-color: rgba(56, 189, 248, 0.15);
     }}
-    QTableWidget::item:hover {{
+    QTableView::item:hover, QTableWidget::item:hover {{
         background-color: rgba(51, 65, 85, 0.3);
     }}
     QHeaderView::section {{
@@ -106,6 +137,36 @@ TAB_STYLE = f"""
         border-bottom-color: {Colors.ACCENT_PRIMARY};
     }}
 """
+
+# Phase 1: Studio Mode chips (pill style, single-select)
+CHIP_STYLE = f"""
+    QPushButton {{
+        background: {Colors.BG_DARK};
+        border: 1px solid {Colors.BORDER};
+        border-radius: 999px;
+        color: {Colors.TEXT_SECONDARY};
+        padding: 8px 12px;
+        font-size: 12px;
+    }}
+    QPushButton:hover {{
+        color: {Colors.TEXT_PRIMARY};
+        border-color: #475569;
+    }}
+    QPushButton:checked {{
+        background: #1e3a5f;
+        border-color: {Colors.ACCENT_PRIMARY};
+        color: {Colors.ACCENT_PRIMARY};
+    }}
+"""
+
+# Status badge colors (plugin-page-analysis.md)
+STATUS_COLORS = {
+    PLUGIN_STATE_SAFE: "#166534",    # green-800
+    PLUGIN_STATE_RISKY: "#b45309",   # amber-700
+    PLUGIN_STATE_MISSING: "#b91c1c", # red-700
+    PLUGIN_STATE_UNKNOWN: "#4b5563", # gray-600 (yellow in UI copy)
+    PLUGIN_STATE_UNUSED: Colors.TEXT_MUTED,
+}
 
 
 # =============================================================================
@@ -220,11 +281,77 @@ class PluginChip(QFrame):
 
 
 # =============================================================================
-# Plugins Panel (for project detail view)
+# Plugins Panel (for project detail view) — List model + delegate, no widget-per-row
 # =============================================================================
 
+class ProjectPluginsListModel(QAbstractListModel):
+    """List model for plugins used in a project. Each row: plugin_name, plugin_type, count."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._plugins: List[Dict] = []
+
+    def set_plugins(self, plugins: List[Dict]) -> None:
+        self.beginResetModel()
+        self._plugins = list(plugins)
+        self.endResetModel()
+
+    def rowCount(self, parent=QModelIndex()):
+        if parent.isValid():
+            return 0
+        return len(self._plugins)
+
+    def data(self, index: QModelIndex, role=Qt.ItemDataRole.DisplayRole):
+        if not index.isValid() or index.row() < 0 or index.row() >= len(self._plugins):
+            return None
+        row = self._plugins[index.row()]
+        if role == Qt.ItemDataRole.DisplayRole:
+            return (row.get("plugin_name") or "").strip()
+        if role == Qt.ItemDataRole.UserRole:
+            return row
+        return None
+
+
+class ProjectPluginsDelegate(QStyledItemDelegate):
+    """Paint each row as a chip: icon + name + optional count."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex):
+        row = index.data(Qt.ItemDataRole.UserRole)
+        if not row:
+            super().paint(painter, option, index)
+            return
+        plugin_name = (row.get("plugin_name") or "").strip()
+        plugin_type = row.get("plugin_type") or "effect"
+        count = row.get("count") or 1
+        rect = option.rect.adjusted(4, 2, -4, -2)
+        painter.save()
+        # Chip background
+        painter.setPen(QColor(Colors.BORDER))
+        painter.setBrush(QColor(Colors.BG_CARD))
+        painter.drawRoundedRect(rect, 6, 6)
+        # Icon
+        icon_name = "synthesizer" if plugin_type == "generator" else "effect"
+        icon_color = QColor(Colors.ACCENT_GENERATOR) if plugin_type == "generator" else QColor(Colors.ACCENT_EFFECT)
+        icon_pix = get_icon(icon_name, icon_color, 14).pixmap(14, 14)
+        icon_rect = rect.adjusted(10, (rect.height() - 14) // 2, 10 + 14, 0)
+        painter.drawPixmap(icon_rect.left(), icon_rect.top(), icon_pix)
+        # Name
+        painter.setPen(QColor(Colors.TEXT_PRIMARY))
+        name_rect = rect.adjusted(10 + 14 + 6, 0, -8, 0)
+        painter.drawText(name_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, plugin_name)
+        if count > 1:
+            painter.setPen(QColor(Colors.TEXT_MUTED))
+            count_text = f"×{count}"
+            painter.drawText(rect, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, count_text)
+        painter.restore()
+
+    def sizeHint(self, option: QStyleOptionViewItem, index: QModelIndex):
+        return QSize(200, 36)
+
+
 class PluginsPanel(QWidget):
-    """Panel showing plugins used in a project."""
+    """Panel showing plugins used in a project (list model + delegate, virtualized)."""
     
     plugin_clicked = Signal(str)
     rescan_requested = Signal(int)
@@ -233,78 +360,58 @@ class PluginsPanel(QWidget):
         super().__init__(parent)
         self.project_id: Optional[int] = None
         self._setup_ui()
-    
+
     def _setup_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(8)
         
-        # Header
         header = QHBoxLayout()
         title = QLabel("Plugins Used")
         title.setStyleSheet(f"font-size: 13px; font-weight: 700; color: {Colors.TEXT_PRIMARY};")
         header.addWidget(title)
-        
         self.count_label = QLabel("0 plugins")
         self.count_label.setStyleSheet(f"color: {Colors.TEXT_MUTED}; font-size: 11px;")
         header.addWidget(self.count_label)
         header.addStretch()
         layout.addLayout(header)
         
-        # Scrollable plugins container
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
-        scroll_area.setStyleSheet(f"""
-            QScrollArea {{
-                background: transparent;
-                border: none;
-            }}
-            QScrollBar:vertical {{
-                background: {Colors.BG_DARK};
-                width: 8px;
-                border-radius: 4px;
-            }}
-            QScrollBar::handle:vertical {{
-                background: {Colors.BORDER};
-                border-radius: 4px;
-                min-height: 20px;
-            }}
-            QScrollBar::handle:vertical:hover {{
-                background: {Colors.TEXT_MUTED};
-            }}
+        self.plugins_model = ProjectPluginsListModel(self)
+        self.plugins_list = QListView()
+        self.plugins_list.setModel(self.plugins_model)
+        self.plugins_list.setItemDelegate(ProjectPluginsDelegate(self.plugins_list))
+        self.plugins_list.setFrameShape(QFrame.Shape.NoFrame)
+        self.plugins_list.setSpacing(4)
+        self.plugins_list.setUniformItemSizes(True)
+        self.plugins_list.setStyleSheet(f"""
+            QListView {{ background: transparent; border: none; outline: none; }}
+            QListView::item {{ height: 36px; }}
+            QListView::item:hover {{ background: rgba(51, 65, 85, 0.3); border-radius: 6px; }}
+            QScrollBar:vertical {{ background: {Colors.BG_DARK}; width: 8px; border-radius: 4px; }}
+            QScrollBar::handle:vertical {{ background: {Colors.BORDER}; border-radius: 4px; min-height: 20px; }}
         """)
+        self.plugins_list.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.plugins_list.clicked.connect(self._on_plugin_clicked)
+        layout.addWidget(self.plugins_list, 1)
         
-        # Container widget for plugins
-        plugins_widget = QWidget()
-        self.plugins_layout = QVBoxLayout(plugins_widget)
-        self.plugins_layout.setContentsMargins(0, 0, 0, 0)
-        self.plugins_layout.setSpacing(4)
-        self.plugins_layout.addStretch()  # Push plugins to top
-        
-        scroll_area.setWidget(plugins_widget)
-        layout.addWidget(scroll_area, 1)  # Take remaining space
-        
-        # Empty state
         self.empty_label = QLabel("No plugins detected")
         self.empty_label.setStyleSheet(f"color: {Colors.TEXT_MUTED}; font-size: 12px;")
         self.empty_label.hide()
         layout.addWidget(self.empty_label)
+
+    def _on_plugin_clicked(self, index: QModelIndex):
+        if index.isValid():
+            name = (self.plugins_model.data(index, Qt.ItemDataRole.UserRole) or {}).get("plugin_name")
+            if name:
+                self.plugin_clicked.emit((name or "").strip())
     
     def set_project(self, project_id: int):
         """Load plugins for a project."""
         self.project_id = project_id
-        
-        # Clear existing
-        while self.plugins_layout.count():
-            item = self.plugins_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-        
         if not project_id:
+            self.plugins_model.set_plugins([])
             self._show_empty()
             return
-        
         try:
             rows = query(
                 """SELECT plugin_name, plugin_type, COUNT(*) as count
@@ -318,387 +425,321 @@ class PluginsPanel(QWidget):
         except Exception as e:
             logger.error(f"Failed to load plugins: {e}")
             plugins = []
-        
         if not plugins:
+            self.plugins_model.set_plugins([])
             self._show_empty()
             return
-        
         self.empty_label.hide()
         self.count_label.setText(f"{len(plugins)} plugins")
-        
-        # Remove the stretch spacer before adding plugins
-        if self.plugins_layout.count() > 0:
-            item = self.plugins_layout.takeAt(self.plugins_layout.count() - 1)
-            if item:
-                self.plugins_layout.removeItem(item)
-        
-        for p in plugins:
-            chip = PluginChip(p['plugin_name'], p.get('plugin_type', 'effect'), p.get('count', 1))
-            chip.clicked.connect(self.plugin_clicked)
-            self.plugins_layout.addWidget(chip)
-        
-        # Add stretch back at the end
-        self.plugins_layout.addStretch()
-    
+        self.plugins_model.set_plugins(plugins)
+
     def _show_empty(self):
         self.empty_label.show()
         self.count_label.setText("0 plugins")
-    
+
     def clear(self):
         self.project_id = None
-        # Remove all items except the stretch spacer
-        while self.plugins_layout.count() > 1:
-            item = self.plugins_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+        self.plugins_model.set_plugins([])
         self._show_empty()
 
 
+class LoadThread(QThread):
+    result_ready = Signal(int, list)
+
+    def __init__(self, rid, studio_filter, search_term):
+        super().__init__()
+        self.rid = rid
+        self.studio_filter = studio_filter
+        self.search_term = search_term
+
+    def run(self):
+        try:
+            raw = get_plugin_truth_states(
+                studio_filter=self.studio_filter,
+                search_term=self.search_term or None,
+                limit=500,
+            )
+            self.result_ready.emit(self.rid, raw)
+        except Exception as e:
+            logger.exception("Plugin list load: %s", e)
+            self.result_ready.emit(self.rid, [])
+
+
 # =============================================================================
-# Plugin Analytics Panel (Main Dashboard) - Optimized
+# Plugin list: Model + Delegate (virtualized, no widget-per-row)
+# =============================================================================
+
+class PluginsTableModel(QAbstractTableModel):
+    """Table model for Plugin Analytics list. Columns: Status, Name, Format, Projects, Last seen."""
+    COL_STATUS = 0
+    COL_NAME = 1
+    COL_FORMAT = 2
+    COL_PROJECTS = 3
+    COL_LAST_SEEN = 4
+    HEADERS = ["Status", "Name", "Format", "Projects", "Last seen"]
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._rows: List[Dict] = []
+
+    def set_plugin_list(self, raw: List[Dict]) -> None:
+        self.beginResetModel()
+        self._rows = list(raw)
+        self.endResetModel()
+
+    def rowCount(self, parent=QModelIndex()):
+        if parent.isValid():
+            return 0
+        return len(self._rows)
+
+    def columnCount(self, parent=QModelIndex()):
+        if parent.isValid():
+            return 0
+        return 5
+
+    def data(self, index: QModelIndex, role=Qt.ItemDataRole.DisplayRole):
+        if not index.isValid() or index.row() < 0 or index.row() >= len(self._rows):
+            return None
+        row = self._rows[index.row()]
+        col = index.column()
+        if role == Qt.ItemDataRole.DisplayRole:
+            if col == self.COL_STATUS:
+                return (row.get("state") or "unknown").capitalize()
+            if col == self.COL_NAME:
+                return (row.get("plugin_name") or "").strip()
+            if col == self.COL_FORMAT:
+                return row.get("format") or "?"
+            if col == self.COL_PROJECTS:
+                return str(row.get("project_count") or 0)
+            if col == self.COL_LAST_SEEN:
+                last_seen = row.get("last_seen")
+                return format_smart_date(last_seen) if last_seen else "—"
+        if role == Qt.ItemDataRole.UserRole:
+            return (row.get("plugin_name") or "").strip()
+        if role == Qt.ItemDataRole.ForegroundRole:
+            if col == self.COL_STATUS:
+                state = (row.get("state") or "unknown").lower()
+                return QColor(STATUS_COLORS.get(state, Colors.TEXT_MUTED))
+            if col in (self.COL_FORMAT, self.COL_LAST_SEEN):
+                return QColor(Colors.TEXT_SECONDARY)
+        return None
+
+    def headerData(self, section: int, orientation: Qt.Orientation, role=Qt.ItemDataRole.DisplayRole):
+        if orientation == Qt.Orientation.Horizontal and role == Qt.ItemDataRole.DisplayRole and 0 <= section < 5:
+            return self.HEADERS[section]
+        return None
+
+
+class PluginsTableDelegate(QStyledItemDelegate):
+    """Paint status column with status color; others use default."""
+    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex):
+        if index.column() == PluginsTableModel.COL_STATUS:
+            painter.save()
+            text = index.data(Qt.ItemDataRole.DisplayRole) or ""
+            color = index.data(Qt.ItemDataRole.ForegroundRole)
+            if color:
+                painter.setPen(color)
+            rect = option.rect
+            painter.drawText(rect.adjusted(4, 0, -4, 0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, text)
+            painter.restore()
+        else:
+            super().paint(painter, option, index)
+
+
+# =============================================================================
+# Plugin Analytics Panel (Phase 1 Control Room)
 # =============================================================================
 
 class PluginAnalyticsPanel(QWidget):
-    """Enhanced plugin analytics dashboard using QTableWidget for performance."""
+    """Unified plugin list with truth state. Studio Mode chips. No vanity stats."""
     
     plugin_clicked = Signal(str)
     system_scan_requested = Signal()
     
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.current_filter = "all"
+        self.current_studio_filter = "all"  # default: All (every plugin)
         self.search_term = ""
+        self.show_unused = False
+        self._active_threads = set() # Keep threads alive until finished
         self._setup_ui()
-        # Defer refresh
         QTimer.singleShot(200, self.refresh)
     
     def _setup_ui(self):
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(16)
+        layout.setSpacing(12)
         
-        # =========================================
-        # STATS ROW - Unified card container
-        # =========================================
-        stats_container = QFrame()
-        stats_container.setStyleSheet(f"""
-            QFrame {{
-                background: {Colors.BG_CARD};
-                border: 1px solid {Colors.BORDER};
-                border-radius: 12px;
-            }}
-        """)
-        stats_container.setMaximumHeight(100)
+        # ---------- Top bar: Search + Studio chips + Show Unused + Scan ----------
+        top_bar = QHBoxLayout()
+        top_bar.setSpacing(12)
         
-        stats_layout = QHBoxLayout(stats_container)
-        stats_layout.setContentsMargins(8, 8, 8, 8)
-        stats_layout.setSpacing(0)
-        
-        self.stat_total = StatCard("Total", "0", Colors.ACCENT_PRIMARY)
-        stats_layout.addWidget(self.stat_total)
-        
-        # Separator
-        sep1 = QFrame()
-        sep1.setFixedWidth(1)
-        sep1.setStyleSheet(f"background: {Colors.BORDER};")
-        stats_layout.addWidget(sep1)
-        
-        self.stat_effects = StatCard("Effects", "0", Colors.ACCENT_EFFECT)
-        self.stat_effects.clicked.connect(lambda: self._set_filter("effects"))
-        stats_layout.addWidget(self.stat_effects)
-        
-        sep2 = QFrame()
-        sep2.setFixedWidth(1)
-        sep2.setStyleSheet(f"background: {Colors.BORDER};")
-        stats_layout.addWidget(sep2)
-        
-        self.stat_generators = StatCard("Generators", "0", Colors.ACCENT_GENERATOR)
-        self.stat_generators.clicked.connect(lambda: self._set_filter("generators"))
-        stats_layout.addWidget(self.stat_generators)
-        
-        sep3 = QFrame()
-        sep3.setFixedWidth(1)
-        sep3.setStyleSheet(f"background: {Colors.BORDER};")
-        stats_layout.addWidget(sep3)
-        
-        self.stat_native = StatCard("Native", "0", Colors.ACCENT_NATIVE)
-        self.stat_native.clicked.connect(lambda: self._set_filter("native"))
-        stats_layout.addWidget(self.stat_native)
-        
-        sep4 = QFrame()
-        sep4.setFixedWidth(1)
-        sep4.setStyleSheet(f"background: {Colors.BORDER};")
-        stats_layout.addWidget(sep4)
-        
-        self.stat_vst = StatCard("VST", "0", Colors.ACCENT_VST)
-        self.stat_vst.clicked.connect(lambda: self._set_filter("vst"))
-        stats_layout.addWidget(self.stat_vst)
-        
-        layout.addWidget(stats_container)
-        
-        # =========================================
-        # FILTER BAR
-        # =========================================
-        filter_bar = QHBoxLayout()
-        filter_bar.setSpacing(12)
-        
-        # Search
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Search plugins...")
+        self.search_input.setPlaceholderText("Search plugins…")
         self.search_input.setStyleSheet(SEARCH_STYLE)
-        self.search_input.setMaximumWidth(300)
+        self.search_input.setMaximumWidth(280)
         self.search_input.textChanged.connect(self._on_search_delayed)
-        filter_bar.addWidget(self.search_input)
+        top_bar.addWidget(self.search_input)
         
-        filter_bar.addStretch()
-        
-        # Tabs
-        self.tab_buttons = {}
-        for tab_id, tab_label in [("all", "All"), ("effects", "Effects"), ("generators", "Generators"), 
-                                   ("native", "Native"), ("vst", "VST"), ("unused", "Unused")]:
-            btn = QPushButton(tab_label)
+        # Filter chips: All = every plugin; Studio = my plugins (safest first); Missing = only missing; etc.
+        self.chip_group = QButtonGroup(self)
+        self.chip_buttons = {}
+        for chip_id, label in [
+            ("all", "All"),
+            ("studio", "Studio"),
+            ("missing", "Missing"),
+            ("risky", "Risky"),
+            ("hot", "Hot"),
+            ("last30", "Last 30 days"),
+        ]:
+            btn = QPushButton(label)
             btn.setCheckable(True)
-            btn.setChecked(tab_id == "all")
-            btn.setStyleSheet(TAB_STYLE)
-            btn.clicked.connect(lambda _, t=tab_id: self._set_filter(t))
-            filter_bar.addWidget(btn)
-            self.tab_buttons[tab_id] = btn
+            btn.setChecked(chip_id == "all")
+            btn.setStyleSheet(CHIP_STYLE)
+            btn.clicked.connect(lambda _, c=chip_id: self._set_studio_filter(c))
+            top_bar.addWidget(btn)
+            self.chip_buttons[chip_id] = btn
+            self.chip_group.addButton(btn)
         
-        # Scan button
+        top_bar.addStretch()
+        
+        self.show_unused_check = QCheckBox("Show Unused")
+        self.show_unused_check.setStyleSheet(f"color: {Colors.TEXT_SECONDARY}; font-size: 12px;")
+        self.show_unused_check.setChecked(False)
+        self.show_unused_check.stateChanged.connect(self.refresh)
+        top_bar.addWidget(self.show_unused_check)
+        
         self.scan_btn = QPushButton(" Scan")
         self.scan_btn.setIcon(get_icon("scan", QColor(Colors.TEXT_PRIMARY), 14))
-        self.scan_btn.clicked.connect(lambda: self.system_scan_requested.emit())
+        self.scan_btn.clicked.connect(self.system_scan_requested.emit)
         self.scan_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: {Colors.BG_CARD};
-                color: {Colors.TEXT_PRIMARY};
-                border: 1px solid {Colors.BORDER};
-                border-radius: 6px;
-                padding: 8px 14px;
-            }}
-            QPushButton:hover {{
-                background: {Colors.BG_CARD_HOVER};
-            }}
+            QPushButton {{ background: {Colors.BG_CARD}; color: {Colors.TEXT_PRIMARY};
+                border: 1px solid {Colors.BORDER}; border-radius: 6px; padding: 8px 14px; }}
+            QPushButton:hover {{ background: {Colors.BG_CARD_HOVER}; }}
         """)
-        filter_bar.addWidget(self.scan_btn)
+        top_bar.addWidget(self.scan_btn)
         
-        layout.addLayout(filter_bar)
+        layout.addLayout(top_bar)
         
-        # =========================================
-        # TABLE
-        # =========================================
-        self.table = QTableWidget()
-        self.table.setColumnCount(4)
-        self.table.setHorizontalHeaderLabels(["", "Plugin", "Projects", "Uses"])
+        # ---------- List header ----------
+        list_head = QHBoxLayout()
+        list_head.addWidget(QLabel("Plugins"))
+        list_head.addStretch()
+        list_head.addWidget(QLabel("Safest first"))
+        list_head.last_label = list_head.itemAt(list_head.count() - 1).widget()
+        list_head.last_label.setStyleSheet(f"color: {Colors.TEXT_MUTED}; font-size: 11px;")
+        layout.addLayout(list_head)
+        
+        # ---------- Table: Status | Name | Format | Projects | Last seen (Model/View for virtualization) ----------
+        self.plugins_model = PluginsTableModel(self)
+        self.table = QTableView()
+        self.table.setModel(self.plugins_model)
+        self.table.setItemDelegate(PluginsTableDelegate(self.table))
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setShowGrid(False)
         self.table.setStyleSheet(TABLE_STYLE)
         self.table.setAlternatingRowColors(False)
-        
-        # Column sizing - prevent stretching
         header = self.table.horizontalHeader()
         header.setStretchLastSection(False)
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)  # Changed from Stretch to Interactive
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
-        self.table.setColumnWidth(0, 36)
-        self.table.setColumnWidth(1, 300)  # Set explicit width for plugin name column
-        self.table.setColumnWidth(2, 80)
-        self.table.setColumnWidth(3, 70)
-        
-        self.table.cellClicked.connect(self._on_row_clicked)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
+        self.table.setColumnWidth(0, 72)
+        self.table.setColumnWidth(2, 56)
+        self.table.setColumnWidth(3, 64)
+        self.table.setColumnWidth(4, 80)
+        self.table.clicked.connect(self._on_row_clicked)
         layout.addWidget(self.table, 1)
         
-        # Search debounce timer
         self._search_timer = QTimer()
         self._search_timer.setSingleShot(True)
-        self._search_timer.timeout.connect(self._do_search)
+        self._search_timer.timeout.connect(self.refresh)
     
     def _on_search_delayed(self, text: str):
-        """Debounce search to avoid lag."""
-        self.search_term = text.strip().lower()
+        self.search_term = text.strip()
         self._search_timer.stop()
-        self._search_timer.start(300)  # 300ms debounce
+        self._search_timer.start(300)
     
-    def _do_search(self):
-        """Execute the search."""
+    def _set_studio_filter(self, chip_id: str):
+        self.current_studio_filter = chip_id
+        for cid, btn in self.chip_buttons.items():
+            btn.setChecked(cid == chip_id)
         self.refresh()
-    
-    def _set_filter(self, filter_type: str):
-        self.current_filter = filter_type
-        for tab_id, btn in self.tab_buttons.items():
-            btn.setChecked(tab_id == filter_type)
-        self.refresh()
-    
-    def refresh(self):
-        """Refresh the plugin list."""
-        self.table.setRowCount(0)
-        
-        try:
-            if self.current_filter == "unused":
-                self._load_unused()
-            else:
-                self._load_used()
-        except Exception as e:
-            logger.error(f"Failed to refresh plugin analytics: {e}")
-    
-    def _load_used(self):
-        """Load used plugins."""
-        self.table.setHorizontalHeaderLabels(["", "Plugin", "Projects", "Uses"])
-        
-        # Build query
-        sql = """
-            SELECT plugin_name, plugin_type,
-                   COUNT(DISTINCT project_id) as project_count,
-                   COUNT(*) as total_count
-            FROM project_plugins
-        """
-        
-        where = []
-        params = []
-        
-        if self.current_filter == "effects":
-            where.append("plugin_type = 'effect'")
-        elif self.current_filter == "generators":
-            where.append("plugin_type = 'generator'")
-        elif self.current_filter == "native":
-            where.append("(plugin_name LIKE 'Fruity%' OR plugin_name IN ('Maximus','Edison','Harmor','Sytrus','Vocodex','Gross Beat','Slicex','FPC'))")
-        elif self.current_filter == "vst":
-            where.append("plugin_name NOT LIKE 'Fruity%' AND plugin_name NOT IN ('Maximus','Edison','Harmor','Sytrus','Vocodex','Gross Beat','Slicex','FPC')")
-        
-        if self.search_term:
-            where.append("LOWER(plugin_name) LIKE ?")
-            params.append(f"%{self.search_term}%")
-        
-        if where:
-            sql += " WHERE " + " AND ".join(where)
-        
-        sql += " GROUP BY plugin_name ORDER BY project_count DESC LIMIT 100"
-        
-        try:
-            if params:
-                rows = query(sql, tuple(params))
-            else:
-                rows = query(sql)
-            plugins = [dict(r) for r in rows]
-        except Exception as e:
-            logger.error(f"Query failed: {e}")
-            plugins = []
-        
-        self._update_stats()
-        
-        self.table.setRowCount(len(plugins))
-        
-        for i, p in enumerate(plugins):
-            ptype = p.get('plugin_type', 'effect')
-            
-            # Icon
-            icon_name = "synthesizer" if ptype == 'generator' else "effect"
-            icon_color = QColor(Colors.ACCENT_GENERATOR) if ptype == 'generator' else QColor(Colors.ACCENT_EFFECT)
-            
-            # Check if native
-            pname = p.get('plugin_name', '')
-            if pname.startswith('Fruity') or pname in ('Maximus','Edison','Harmor','Sytrus','Vocodex','Gross Beat'):
-                icon_color = QColor(Colors.ACCENT_NATIVE)
-                icon_name = "fl_studio"
-            
-            icon_item = QTableWidgetItem()
-            icon_item.setIcon(get_icon(icon_name, icon_color, 18))
-            self.table.setItem(i, 0, icon_item)
-            
-            # Name
-            name_item = QTableWidgetItem(pname)
-            name_item.setData(Qt.ItemDataRole.UserRole, pname)
-            self.table.setItem(i, 1, name_item)
-            
-            # Projects
-            proj_item = QTableWidgetItem(str(p.get('project_count', 0)))
-            proj_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            proj_item.setForeground(QColor(Colors.ACCENT_PRIMARY))
-            self.table.setItem(i, 2, proj_item)
-            
-            # Uses
-            uses_item = QTableWidgetItem(str(p.get('total_count', 0)))
-            uses_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            uses_item.setForeground(QColor(Colors.TEXT_SECONDARY))
-            self.table.setItem(i, 3, uses_item)
-    
-    def _load_unused(self):
-        """Load unused plugins."""
-        self.table.setHorizontalHeaderLabels(["", "Plugin", "Format", "Path"])
-        
-        try:
-            from ...utils.plugin_scanner import get_unused_plugins
-            items = get_unused_plugins()
-        except Exception as e:
-            logger.error(f"Failed to get unused plugins: {e}")
-            items = []
-        
-        if self.search_term:
-            items = [p for p in items if self.search_term in p.get('name', '').lower()]
-        
-        self.table.setRowCount(len(items))
-        
-        for i, p in enumerate(items):
-            icon_item = QTableWidgetItem()
-            icon_item.setIcon(get_icon("trash", QColor(Colors.TEXT_MUTED), 16))
-            self.table.setItem(i, 0, icon_item)
-            
-            name_item = QTableWidgetItem(p.get('name', 'Unknown'))
-            self.table.setItem(i, 1, name_item)
-            
-            fmt_item = QTableWidgetItem(p.get('format', 'VST'))
-            fmt_item.setForeground(QColor(Colors.TEXT_SECONDARY))
-            self.table.setItem(i, 2, fmt_item)
-            
-            # Truncate path
-            path = p.get('path', '')
-            if len(path) > 60:
-                path = "..." + path[-57:]
-            path_item = QTableWidgetItem(path)
-            path_item.setForeground(QColor(Colors.TEXT_MUTED))
-            self.table.setItem(i, 3, path_item)
-    
-    def _update_stats(self):
-        """Update stat cards."""
-        try:
-            result = query("SELECT COUNT(DISTINCT plugin_name) as c FROM project_plugins")
-            self.stat_total.set_value(str(result[0]['c'] if result else 0))
-        except:
-            self.stat_total.set_value("0")
-        
-        try:
-            result = query("SELECT COUNT(DISTINCT plugin_name) as c FROM project_plugins WHERE plugin_type='effect'")
-            self.stat_effects.set_value(str(result[0]['c'] if result else 0))
-        except:
-            self.stat_effects.set_value("0")
-        
-        try:
-            result = query("SELECT COUNT(DISTINCT plugin_name) as c FROM project_plugins WHERE plugin_type='generator'")
-            self.stat_generators.set_value(str(result[0]['c'] if result else 0))
-        except:
-            self.stat_generators.set_value("0")
-        
-        try:
-            result = query("SELECT COUNT(DISTINCT plugin_name) as c FROM project_plugins WHERE plugin_name LIKE 'Fruity%' OR plugin_name IN ('Maximus','Edison','Harmor','Sytrus')")
-            self.stat_native.set_value(str(result[0]['c'] if result else 0))
-        except:
-            self.stat_native.set_value("0")
-        
-        try:
-            result = query("SELECT COUNT(DISTINCT plugin_name) as c FROM project_plugins WHERE plugin_name NOT LIKE 'Fruity%'")
-            self.stat_vst.set_value(str(result[0]['c'] if result else 0))
-        except:
-            self.stat_vst.set_value("0")
-    
-    def _on_row_clicked(self, row, col):
-        if self.current_filter == "unused":
+
+    def _start_load_thread(self):
+        """Run get_plugin_truth_states in a worker thread so the UI never blocks."""
+        studio_filter = self.current_studio_filter if self.current_studio_filter != "all" else None
+        search_term = self.search_term or None
+        show_unused = self.show_unused_check.isChecked()
+        request_id = getattr(self, "_load_request_id", 0) + 1
+        self._load_request_id = request_id
+
+        class LoadThread(QThread):
+            result_ready = Signal(int, list)
+
+            def __init__(self, rid, studio_filter, search_term):
+                super().__init__(None)  # No parent: do not destroy with panel or app
+                self.rid = rid
+                self.studio_filter = studio_filter
+                self.search_term = search_term
+
+            def run(self):
+                try:
+                    raw = get_plugin_truth_states(
+                        studio_filter=self.studio_filter,
+                        search_term=self.search_term or None,
+                        limit=500,
+                    )
+                    self.result_ready.emit(self.rid, raw)
+                except Exception as e:
+                    logger.exception("Plugin list load: %s", e)
+                    self.result_ready.emit(self.rid, [])
+
+        thread = LoadThread(request_id, studio_filter, search_term)
+        _active_load_threads.add(thread)
+
+        def _cleanup(t):
+            _active_load_threads.discard(t)
+            t.deleteLater()
+
+        thread.result_ready.connect(self._on_plugin_list_loaded)
+        thread.finished.connect(lambda t=thread: _cleanup(t))
+        thread.start()
+        self._load_thread = thread
+
+    def _on_plugin_list_loaded(self, request_id: int, raw: list):
+        """Apply plugin list to model on main thread. Ignore stale responses. Update cache for detail panel."""
+        if request_id != getattr(self, "_load_request_id", 0):
             return
-        item = self.table.item(row, 1)
-        if item:
-            plugin_name = item.data(Qt.ItemDataRole.UserRole)
+        show_unused = self.show_unused_check.isChecked()
+        if self.current_studio_filter == "all" and not show_unused:
+            raw = [r for r in raw if r.get("state") != PLUGIN_STATE_UNUSED]
+        _plugin_state_cache.clear()
+        for r in raw:
+            name = (r.get("plugin_name") or "").strip()
+            if name:
+                _plugin_state_cache[name.lower()] = dict(r)
+        self.plugins_model.set_plugin_list(raw)
+        self._load_thread = None
+
+    def refresh(self):
+        self.plugins_model.set_plugin_list([])
+        self._search_timer.stop()
+        try:
+            self._start_load_thread()
+        except Exception as e:
+            logger.exception("Plugin list refresh: %s", e)
+
+    def _on_row_clicked(self, index: QModelIndex):
+        if index.isValid():
+            plugin_name = self.plugins_model.data(
+                self.plugins_model.index(index.row(), PluginsTableModel.COL_NAME),
+                Qt.ItemDataRole.UserRole,
+            )
             if plugin_name:
                 self.plugin_clicked.emit(plugin_name)

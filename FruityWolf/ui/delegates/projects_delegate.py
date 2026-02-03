@@ -14,6 +14,7 @@ from PySide6.QtGui import QPainter, QIcon, QMouseEvent, QColor, QFont, QBrush
 from ...utils import get_icon
 from ...classifier.engine import ProjectState
 from ..view_models.projects_model import ProjectsModel
+from ...core.activity_heat import get_heat_color
 
 class ProjectsDelegate(QStyledItemDelegate):
     """Delegate for drawing rich cells in projects table."""
@@ -36,9 +37,9 @@ class ProjectsDelegate(QStyledItemDelegate):
     def paint(self, painter: QPainter, option: "QStyleOptionViewItem", index: QModelIndex):
         col = index.column()
         
-        # 1. SCORE BAR
-        if col == ProjectsModel.COL_SCORE:
-            self._paint_score(painter, option, index)
+        # 1. HEAT / SIGNALS
+        if col == ProjectsModel.COL_HEAT:
+            self._paint_heat_signal(painter, option, index)
             return
 
         # 2. ACTIONS
@@ -46,90 +47,89 @@ class ProjectsDelegate(QStyledItemDelegate):
             self._paint_actions(painter, option, index)
             return
             
-        # 3. NEXT ACTION
-        if col == ProjectsModel.COL_NEXT_ACTION:
-             self._paint_next_action(painter, option, index)
+        # 3. AUDIBILITY / SAFETY (Dots)
+        if col == ProjectsModel.COL_AUDIBILITY:
+             self._paint_audibility(painter, option, index)
+             return
+             
+        if col == ProjectsModel.COL_SAFETY:
+             self._paint_safety(painter, option, index)
              return
         
-        # 4. STATE (with confidence/lock indicators)
-        if col == ProjectsModel.COL_STATE:
-            self._paint_state_with_indicators(painter, option, index)
-            return
-            
         super().paint(painter, option, index)
         
-    def _paint_score(self, painter: QPainter, option, index):
+    def _paint_heat_signal(self, painter: QPainter, option, index):
         painter.save()
         
-        # Data
-        try:
-            score = int(index.data(Qt.ItemDataRole.DisplayRole) or 0)
-        except: score = 0
-        
-        # Config
+        heat_label = index.data(Qt.ItemDataRole.DisplayRole) or "Cold"
         rect = option.rect
-        bar_height = 6
-        bar_width = rect.width() - 20
-        x = rect.x() + 10
-        y = rect.y() + (rect.height() - bar_height) // 2
         
-        # Bg
-        bg_rect = QRect(x, y, bar_width, bar_height)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor("#1e293b"))
-        painter.drawRoundedRect(bg_rect, 3, 3)
+        # Heat Label (Text)
+        heat_color = QColor(get_heat_color(heat_label))
+        painter.setPen(heat_color)
+        font = painter.font()
+        font.setBold(True)
+        painter.setFont(font)
         
-        # Fill
-        fill_width = int(bar_width * (score / 100))
-        fill_rect = QRect(x, y, fill_width, bar_height)
-        
-        # Color based on score
-        color = QColor("#64748b")
-        if score > 80: color = QColor("#22c55e")
-        elif score > 50: color = QColor("#38bdf8")
-        elif score > 20: color = QColor("#f59e0b")
-        
-        painter.setBrush(color)
-        painter.drawRoundedRect(fill_rect, 3, 3)
-        
-        # Text? Tooltip? 
-        # Plan says "Score Bar".
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, heat_label)
         
         painter.restore()
 
-    def _paint_next_action(self, painter: QPainter, option, index):
-        # Draw Icon + Text manually for better control
+    def _paint_audibility(self, painter: QPainter, option, index):
         painter.save()
-        
         project = index.data(Qt.ItemDataRole.UserRole)
-        action_id = project.get('next_action_id')
-        label = index.data(Qt.ItemDataRole.DisplayRole)
-        
+        if not project:
+            painter.restore()
+            return
+            
         rect = option.rect
         
-        # Icon
-        icon_size = 14
-        icon_x = rect.x() + 4
-        icon_y = rect.y() + (rect.height() - icon_size) // 2
+        is_preview_ready = project.get('render_status') == 'preview_ready' or project.get('has_render')
+        color = QColor("#22c55e") if is_preview_ready else QColor("#475569")
         
-        # Simple color circle for now, or fetch icon?
-        # get_icon("play", ...) 
-        # Actions: render_preview_30s, finish_arrangement, etc.
-        # We need a map. For now Generic Action Icon.
-        
-        action_color = QColor("#cbd5e1")
-        if action_id:
-            if "render" in action_id: action_color = QColor("#f43f5e")
-            if "finish" in action_id: action_color = QColor("#a855f7")
+        # Draw dot
+        dot_size = 10
+        x = rect.center().x() - dot_size // 2
+        y = rect.center().y() - dot_size // 2
         
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(action_color)
-        painter.drawEllipse(icon_x, icon_y, icon_size, icon_size)
+        painter.setBrush(color)
+        painter.drawEllipse(x, y, dot_size, dot_size)
         
-        # Text
-        text_rect = QRect(icon_x + icon_size + 8, rect.y(), rect.width() - icon_size - 12, rect.height())
-        painter.setPen(QColor("#e2e8f0"))
-        painter.drawText(text_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, label)
+        if is_preview_ready:
+            # Checkmark overlay? Nah, just green dot.
+            pass
+            
+        painter.restore()
+
+    def _paint_safety(self, painter: QPainter, option, index):
+        painter.save()
+        project = index.data(Qt.ItemDataRole.UserRole)
+        if not project:
+            painter.restore()
+            return
+            
+        rect = option.rect
+        
+        last_failed = project.get('last_render_failed_at')
+        attempted = project.get('render_attempted_count', 0) > 0
+        
+        if last_failed:
+            color = QColor("#ef4444") # Unstable (Red)
+            # Maybe draw X
+        elif attempted:
+            color = QColor("#22c55e") # OK (Green)
+        else:
+            color = QColor("#475569") # Unknown (Grey)
+            
+        # Draw dot
+        dot_size = 10
+        x = rect.center().x() - dot_size // 2
+        y = rect.center().y() - dot_size // 2
+        
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(color)
+        painter.drawEllipse(x, y, dot_size, dot_size)
         
         painter.restore()
 

@@ -410,14 +410,39 @@ def _extract_plugin_name_from_path(path: str) -> Optional[str]:
 
 def _normalize_plugin_name(name: str) -> str:
     """
-    Normalize plugin name for consistency.
-    Removes VST suffixes, normalizes whitespace, and standardizes common patterns.
+    Normalize plugin name for consistency and deduplication.
+    - Removes VST/format suffixes.
+    - Strips FL-specific instance/parameter junk so we store one name per plugin:
+      e.g. "Nexus #2 - mod wheel" -> "Nexus", "ValhallaDelay (Insert 13) - Mix level" -> "ValhallaDelay",
+      "FabFilter Pro-Q 3 (Slot 1) - ..." -> "FabFilter Pro-Q 3".
     """
     if not name:
         return ""
-    
+
     name = name.strip()
-    
+
+    # --- Strip FL instance/parameter/slot suffixes (order matters) ---
+    # (Slot N) - anything to end (patch/band info)
+    name = re.sub(r'\s*\(Slot\s*\d+\)\s*-.*$', '', name, flags=re.IGNORECASE).strip()
+    # (Insert N)
+    name = re.sub(r'\s*\(Insert\s*\d+\)\s*$', '', name, flags=re.IGNORECASE).strip()
+    # Instance number "#1", "#2", "#10" anywhere (so "Nexus #2 - mod wheel" -> "Nexus" after param strip)
+    name = re.sub(r'\s*#\d+\s*', ' ', name).strip()
+    # (Mono) / (Stereo) for dedup
+    name = re.sub(r'\s*\((?:Mono|Stereo)\)\s*$', '', name, flags=re.IGNORECASE).strip()
+    # Trailing " - <parameter>" in one go (include hyphens: " - flt-mod velocity" -> strip all)
+    while True:
+        m = re.search(r'\s+-\s+(.+)$', name)
+        if not m:
+            break
+        after = m.group(1).strip().lower()
+        # Don't strip if it looks like a product name (e.g. "Pro-Q 3", "Pro-C 2")
+        if re.match(r'^pro[- ]?[qclrgmbds]\s*\d*', after) or (len(after) <= 4 and re.search(r'\d', after)):
+            break
+        name = name[: -len(m.group(0))].strip()
+    # Normalize whitespace after stripping
+    name = ' '.join(name.split())
+
     # Remove common VST format suffixes
     suffixes_to_remove = [
         ' (VST)', ' (VST2)', ' (VST3)', ' (CLAP)', ' (AAX)', ' (AU)',
@@ -426,14 +451,11 @@ def _normalize_plugin_name(name: str) -> str:
         ' x64', ' x86', ' (x64)', ' (x86)', ' 64-bit', ' 32-bit',
         '.vst3', '.dll', '.clap'
     ]
-    
     for suffix in suffixes_to_remove:
         if name.lower().endswith(suffix.lower()):
             name = name[:-len(suffix)].strip()
-    
-    # Normalize whitespace
+
     name = ' '.join(name.split())
-    
     return name
 
 

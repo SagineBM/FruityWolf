@@ -156,6 +156,7 @@ class SettingsDialog(QDialog):
             'scan_on_startup': get_setting('scan_on_startup', 'false') == 'true',
             'watch_folders': get_setting('watch_folders', 'true') == 'true',
             'camelot_notation': get_setting('camelot_notation', 'true') == 'true',
+            'fl_studio_path': get_setting('fl_studio_path', ''),
         }
     
     def _setup_ui(self):
@@ -281,6 +282,20 @@ class SettingsDialog(QDialog):
         layout = QVBoxLayout(widget)
         layout.setSpacing(16)
         
+        # Paths Group
+        paths_group = QGroupBox("Paths")
+        paths_layout = QFormLayout(paths_group)
+        
+        fl_path_layout = QHBoxLayout()
+        self.fl_path_edit = QLineEdit(self._settings.get('fl_studio_path', ''))
+        browse_btn = QPushButton("Browse...")
+        browse_btn.clicked.connect(self._browse_fl_path)
+        fl_path_layout.addWidget(self.fl_path_edit)
+        fl_path_layout.addWidget(browse_btn)
+        
+        paths_layout.addRow("FL Studio Path:", fl_path_layout)
+        layout.addWidget(paths_group)
+        
         # Scanning group
         scan_group = QGroupBox("Scanning")
         scan_layout = QFormLayout(scan_group)
@@ -346,8 +361,20 @@ class SettingsDialog(QDialog):
         
         return widget
     
+    def _browse_fl_path(self):
+        """Browse for FL Studio executable."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, 
+            "Select FL Studio Executable", 
+            "", 
+            "Executables (*.exe);;All Files (*)"
+        )
+        if path:
+            self.fl_path_edit.setText(path)
+
     def _save(self):
         """Save settings."""
+        set_setting('fl_studio_path', self.fl_path_edit.text())
         set_setting('volume', str(self.volume_slider.value()))
         set_setting('auto_play', 'true' if self.auto_play_check.isChecked() else 'false')
         set_setting('show_waveform', 'true' if self.show_waveform_check.isChecked() else 'false')

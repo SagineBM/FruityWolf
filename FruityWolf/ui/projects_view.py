@@ -37,6 +37,7 @@ class ProjectsView(QWidget):
         self.page_size = 100
         self.current_offset = 0
         self.is_loading = False
+        self.active_plugin_filter = None  # Set by app when a plugin is selected (Phase 1)
         
         self.job_manager = JobManager(self)
         self.job_manager.signals.finished.connect(self._on_job_finished)
@@ -63,13 +64,15 @@ class ProjectsView(QWidget):
         
         # Filters
         self.stage_filter = QComboBox()
-        self.stage_filter.setFixedWidth(140)
+        self.stage_filter.setFixedWidth(160)
         self.stage_filter.addItems([
-            "All Stages", 
-            "--- SMART VIEWS ---",
-            "High Potential", "Needs Render", "Almost Finished", "Dead Projects",
-            "--- STAGES ---",
-            "Micro Idea", "Idea", "WIP", "Preview Ready", "Advanced", "Broken/Empty"
+            "All Projects", 
+            "--- WORKFLOW ---",
+            "My current weapons", "Old vault", "Dangerous potential", "Unstable",
+            "--- HEAT ---",
+            "Hot", "Warm", "Cold",
+            "--- SIGNALS ---",
+            "Preview Ready", "Unheard", "OK", "Unknown"
         ])
         self.stage_filter.currentTextChanged.connect(self._on_filter_changed)
         header.addWidget(self.stage_filter)
@@ -80,6 +83,12 @@ class ProjectsView(QWidget):
         self.search_input.setObjectName("searchInput")
         self.search_input.textChanged.connect(self._on_filter_changed)
         header.addWidget(self.search_input)
+        
+        # Phase 1: Safe to open only (plugin-page-analysis.md §10.2)
+        self.safe_to_open_only_check = QCheckBox("Safe to open only")
+        self.safe_to_open_only_check.setStyleSheet("color: #94a3b8; font-size: 12px;")
+        self.safe_to_open_only_check.stateChanged.connect(self._on_filter_changed)
+        header.addWidget(self.safe_to_open_only_check)
         
         self.refresh_btn = QPushButton(" Refresh")
         self.refresh_btn.setIcon(get_icon("refresh", QColor("#94a3b8"), 14))
@@ -131,23 +140,25 @@ class ProjectsView(QWidget):
         h.setSectionResizeMode(ProjectsModel.COL_SELECT, QHeaderView.ResizeMode.Fixed)
         self.table.setColumnWidth(ProjectsModel.COL_SELECT, 32)
         
-        h.setSectionResizeMode(ProjectsModel.COL_STATE, QHeaderView.ResizeMode.ResizeToContents)
-        
         h.setSectionResizeMode(ProjectsModel.COL_NAME, QHeaderView.ResizeMode.Stretch)
         
-        h.setSectionResizeMode(ProjectsModel.COL_SCORE, QHeaderView.ResizeMode.Interactive)
-        self.table.setColumnWidth(ProjectsModel.COL_SCORE, 80)
+        h.setSectionResizeMode(ProjectsModel.COL_HEAT, QHeaderView.ResizeMode.Interactive)
+        self.table.setColumnWidth(ProjectsModel.COL_HEAT, 100)
         
-        h.setSectionResizeMode(ProjectsModel.COL_NEXT_ACTION, QHeaderView.ResizeMode.Interactive)
-        self.table.setColumnWidth(ProjectsModel.COL_NEXT_ACTION, 150)
+        h.setSectionResizeMode(ProjectsModel.COL_AUDIBILITY, QHeaderView.ResizeMode.Fixed)
+        self.table.setColumnWidth(ProjectsModel.COL_AUDIBILITY, 80)
         
-        h.setSectionResizeMode(ProjectsModel.COL_CREATED, QHeaderView.ResizeMode.Interactive)
-        self.table.setColumnWidth(ProjectsModel.COL_CREATED, 100)
+        h.setSectionResizeMode(ProjectsModel.COL_SAFETY, QHeaderView.ResizeMode.Fixed)
+        self.table.setColumnWidth(ProjectsModel.COL_SAFETY, 80)
         
-        h.setSectionResizeMode(ProjectsModel.COL_LAST_PLAYED, QHeaderView.ResizeMode.Interactive)
-        self.table.setColumnWidth(ProjectsModel.COL_LAST_PLAYED, 100)
+        h.setSectionResizeMode(ProjectsModel.COL_LAST_TOUCHED, QHeaderView.ResizeMode.Interactive)
+        self.table.setColumnWidth(ProjectsModel.COL_LAST_TOUCHED, 120)
         
-        h.setSectionResizeMode(ProjectsModel.COL_RENDERS, QHeaderView.ResizeMode.ResizeToContents)
+        h.setSectionResizeMode(ProjectsModel.COL_PLAYS, QHeaderView.ResizeMode.Interactive)
+        self.table.setColumnWidth(ProjectsModel.COL_PLAYS, 60)
+        
+        h.setSectionResizeMode(ProjectsModel.COL_OPENS, QHeaderView.ResizeMode.Interactive)
+        self.table.setColumnWidth(ProjectsModel.COL_OPENS, 60)
         
         h.setSectionResizeMode(ProjectsModel.COL_ACTIONS, QHeaderView.ResizeMode.Fixed)
         self.table.setColumnWidth(ProjectsModel.COL_ACTIONS, 120)  # Increased to fit all 4 buttons
@@ -223,7 +234,9 @@ class ProjectsView(QWidget):
             term=search_text,
             stage_filter=stage_filter,
             limit=self.page_size,
-            offset=self.current_offset
+            offset=self.current_offset,
+            plugin_name=self.active_plugin_filter,
+            safe_to_open_only=self.safe_to_open_only_check.isChecked(),
         )
         
         self.filtered_projects = projects
@@ -263,7 +276,9 @@ class ProjectsView(QWidget):
             term=search_text,
             stage_filter=stage_filter,
             limit=self.page_size,
-            offset=self.current_offset
+            offset=self.current_offset,
+            plugin_name=self.active_plugin_filter,
+            safe_to_open_only=self.safe_to_open_only_check.isChecked(),
         )
         
         if projects:
@@ -282,22 +297,11 @@ class ProjectsView(QWidget):
         if not index.isValid(): return
         
         # If click on check box, model handles it.
-        # If click on renders column, show renders panel
-        if index.column() == ProjectsModel.COL_RENDERS:
+        # If click on audibility column, show renders panel (legacy behavior logic, or maybe just select)
+        if index.column() == ProjectsModel.COL_AUDIBILITY:
             project = index.data(Qt.ItemDataRole.UserRole)
             if project:
-                # Refresh render_count before showing panel (in case it's stale)
-                project_id = project.get('id')
-                if project_id:
-                    from ..scanner.library_scanner import refresh_project_render_count
-                    refreshed = refresh_project_render_count(project_id)
-                    if refreshed:
-                        # Update project dict with fresh data
-                        project.update(refreshed)
-                        # Update model
-                        self.model.set_projects(self.filtered_projects)
-                
-                if project.get('render_count', 0) > 0:
+                if project.get('render_count', 0) > 0 or project.get('has_render'):
                     self.view_requested.emit(project)  # Show renders panel
             return
         
@@ -305,23 +309,6 @@ class ProjectsView(QWidget):
         if index.column() != ProjectsModel.COL_SELECT:
              project = index.data(Qt.ItemDataRole.UserRole)
              if project:
-                 # Refresh render_count before showing details (in case it's stale)
-                 project_id = project.get('id')
-                 if project_id:
-                     from ..scanner.library_scanner import refresh_project_render_count
-                     refreshed = refresh_project_render_count(project_id)
-                     if refreshed:
-                         # Update project dict with fresh data
-                         project.update(refreshed)
-                         # Update model to reflect changes
-                         row = index.row()
-                         if row < len(self.filtered_projects):
-                             self.filtered_projects[row].update(refreshed)
-                             # Emit dataChanged for this row
-                             top_left = self.model.index(row, ProjectsModel.COL_RENDERS)
-                             bottom_right = self.model.index(row, ProjectsModel.COL_RENDERS)
-                             self.model.dataChanged.emit(top_left, bottom_right, [Qt.ItemDataRole.DisplayRole])
-                 
                  self.project_selected.emit(project)
             
     def _on_filter_changed(self):
@@ -351,13 +338,35 @@ class ProjectsView(QWidget):
                 
     def _on_open_folder(self, project: dict):
         path = project.get('path')
+        project_id = project.get('id')
         if validate_path(path, "Project folder", self):
             open_folder(path)
+            # Update stats
+            if project_id:
+                try:
+                    now = int(time.time())
+                    execute(
+                        "UPDATE projects SET last_opened_at = ?, open_count = COALESCE(open_count, 0) + 1, updated_at = ? WHERE id = ?", 
+                        (now, now, project_id)
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to update stats for open folder: {e}")
             
     def _on_open_flp(self, project: dict):
         flp_path = project.get('flp_path')
+        project_id = project.get('id')
         if validate_path(flp_path, "FLP", self):
             open_file(flp_path)
+            # Update stats
+            if project_id:
+                try:
+                    now = int(time.time())
+                    execute(
+                        "UPDATE projects SET last_opened_at = ?, open_count = COALESCE(open_count, 0) + 1, updated_at = ? WHERE id = ?", 
+                        (now, now, project_id)
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to update stats for open FLP: {e}")
             
     def _on_model_data_changed(self):
         """Update UI based on model state (selection)."""

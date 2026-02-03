@@ -338,7 +338,7 @@ class Backend(QObject):
         
         # 3. Update timestamps
         now = int(time.time())
-        execute("UPDATE projects SET last_played_ts = ?, updated_at = ? WHERE id = ?", (now, now, project_id))
+        execute("UPDATE projects SET last_played_ts = ?, play_count = COALESCE(play_count, 0) + 1, updated_at = ? WHERE id = ?", (now, now, project_id))
         execute("UPDATE tracks SET play_count = play_count + 1, last_played = ?, updated_at = ? WHERE id = ?", (now, now, track_id))
         
         logger.info(f"Playing project {project_id} render: {track_row['path']}")

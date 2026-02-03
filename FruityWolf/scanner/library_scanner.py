@@ -1781,7 +1781,7 @@ class LibraryScanner(QObject):
                             continue  # Skip if no ID
                         is_new = False
                         
-                        # Update existing project (don't overwrite file_created_at)
+                        # Update existing orphan project: only fields we have (no classification/folders in this path)
                         execute(
                             """UPDATE projects SET
                                name = ?, last_scan = ?, updated_at = ?,
@@ -2330,16 +2330,80 @@ def get_all_projects(limit: int = 1000, offset: int = 0) -> List[Dict]:
 
 def search_projects(
     term: str = '',
-    stage_filter: str = 'All Stages',
+    stage_filter: str = 'All Projects',
     limit: int = 100,
-    offset: int = 0
+    offset: int = 0,
+    plugin_name: Optional[str] = None,
+    safe_to_open_only: bool = False,
 ) -> List[Dict]:
-    """Search projects with filters at the DB level for performance."""
+    """Search projects with filters at the DB level for performance.
+    plugin_name: when set, only projects that use this plugin (by name).
+    safe_to_open_only: only projects that are Safe to open (no missing plugins, not Unstable).
+    """
     conditions = []
     params = []
     
+    import time
+    now = int(time.time())
+    day = 86400
+    
     # 1. Stage Filter / Smart Views
-    if stage_filter == "High Potential":
+    # NOTE: play_count/open_count are 0 for migrated projects. 
+    # Use last_played_ts as fallback for "Hot/Warm" detection on legacy data.
+    
+    if stage_filter == "My current weapons":
+        # Hot + Preview Ready
+        conditions.append("render_status = 'preview_ready'")
+        # High engagement OR recent play OR recent open
+        conditions.append("(play_count >= 5 OR open_count >= 3 OR last_opened_at >= ? OR last_played_ts >= ?)")
+        params.extend([now - (14 * day), now - (14 * day)])
+        
+    elif stage_filter == "Old vault":
+        # Cold + Preview Ready
+        conditions.append("render_status = 'preview_ready'")
+        # Low engagement AND no recent touch
+        conditions.append("(play_count < 3 AND (last_opened_at < ? OR last_opened_at IS NULL) AND (last_played_ts < ? OR last_played_ts IS NULL))")
+        params.extend([now - (30 * day), now - (30 * day)])
+        
+    elif stage_filter == "Dangerous potential":
+        # Hot + Unheard
+        conditions.append("(render_status != 'preview_ready' OR render_status IS NULL)")
+        conditions.append("(play_count >= 5 OR open_count >= 3 OR last_opened_at >= ? OR last_played_ts >= ?)")
+        params.extend([now - (14 * day), now - (14 * day)])
+        
+    elif stage_filter == "Unstable":
+        conditions.append("last_render_failed_at IS NOT NULL")
+        
+    elif stage_filter == "Hot":
+        conditions.append("(play_count >= 5 OR open_count >= 3 OR last_opened_at >= ? OR last_played_ts >= ?)")
+        params.extend([now - (14 * day), now - (14 * day)])
+        
+    elif stage_filter == "Warm":
+        # Mid engagement OR mid recency
+        # "Warm" is tricky with SQL approx. Let's say: played 1-4 times OR touched in last 60 days
+        conditions.append("((play_count BETWEEN 1 AND 4) OR (last_opened_at >= ?) OR (last_played_ts >= ?))")
+        # Note: Broad definition to catch 'recent' stuff. 
+        params.extend([now - (60 * day), now - (60 * day)])
+        
+    elif stage_filter == "Cold":
+        # No recent activity
+        conditions.append("(play_count = 0 AND (last_opened_at < ? OR last_opened_at IS NULL) AND (last_played_ts < ? OR last_played_ts IS NULL))")
+        params.extend([now - (60 * day), now - (60 * day)])
+        
+    elif stage_filter == "Preview Ready":
+        conditions.append("render_status = 'preview_ready'")
+        
+    elif stage_filter == "Unheard":
+        conditions.append("(render_status != 'preview_ready' OR render_status IS NULL)")
+        
+    elif stage_filter == "OK":
+        conditions.append("(last_render_failed_at IS NULL AND render_attempted_count > 0)")
+        
+    elif stage_filter == "Unknown":
+        conditions.append("render_attempted_count = 0")
+        
+    # Legacy filters support
+    elif stage_filter == "High Potential":
         conditions.append("(score >= 60 AND state_id NOT IN ('FINAL', 'BROKEN_OR_EMPTY'))")
     elif stage_filter == "Needs Render":
         conditions.append("next_action_id LIKE '%render%'")
@@ -2347,7 +2411,7 @@ def search_projects(
         conditions.append("(score >= 80 AND state_id != 'FINAL')")
     elif stage_filter == "Dead Projects":
         conditions.append("state_id LIKE '%DEAD%'")
-    elif stage_filter != "All Stages" and "---" not in stage_filter:
+    elif stage_filter != "All Projects" and "---" not in stage_filter:
         # Regular stage mapping
         target = stage_filter.upper().replace(" ", "_").replace("/", "_OR_")
         conditions.append("state_id LIKE ?")
@@ -2357,6 +2421,19 @@ def search_projects(
     if term:
         conditions.append("name LIKE ?")
         params.append(f"%{term}%")
+    
+    # 3. Plugin filter (Phase 1: when a plugin is selected, show only projects using it)
+    if plugin_name and plugin_name.strip():
+        conditions.append("p.id IN (SELECT project_id FROM project_plugins WHERE LOWER(plugin_name) = LOWER(?))")
+        params.append(plugin_name.strip())
+    
+    # 4. Safe to open only (Phase 1: no missing plugins + not Unstable; definition in plugin-page-analysis.md §10.2)
+    if safe_to_open_only:
+        conditions.append("p.last_render_failed_at IS NULL")
+        conditions.append(
+            "p.id NOT IN (SELECT project_id FROM project_plugins pp "
+            "WHERE LOWER(pp.plugin_name) NOT IN (SELECT LOWER(name) FROM installed_plugins WHERE is_active = 1))"
+        )
         
     where_clause = ""
     if conditions:
@@ -2370,7 +2447,12 @@ def search_projects(
     except:
         has_renders_table = False
     
+    # Check if file_created_at exists (it should by now)
     has_file_created = _has_project_file_created_at()
+    # Default order: file_created_at (system creation date) -> created_at (DB insertion/scan date)
+    order_col = "COALESCE(p.file_created_at, p.created_at)" if has_file_created else "p.created_at"
+    
+    # Default order: file_created_at (system creation date) -> created_at (DB insertion/scan date)
     order_col = "COALESCE(p.file_created_at, p.created_at)" if has_file_created else "p.created_at"
     
     if has_renders_table:
@@ -3006,6 +3088,52 @@ def get_project_plugins(project_id: int) -> List[Dict]:
     return [dict(row) for row in rows]
 
 
+# Cache for get_safe_to_open_project_ids (heavy query). TTL 60s; invalidate when plugin scan completes.
+_safe_to_open_cache: Optional[Tuple[Set[int], float]] = None
+_SAFE_TO_OPEN_CACHE_TTL = 60.0
+
+
+def invalidate_safe_to_open_cache() -> None:
+    """Invalidate safe-to-open cache. Call after plugin scan or when installed_plugins changes."""
+    global _safe_to_open_cache
+    _safe_to_open_cache = None
+
+
+def get_safe_to_open_project_ids() -> Set[int]:
+    """
+    Project IDs that are Safe to open (plugin-page-analysis.md §10.2):
+    no referenced plugin Missing, and project not Unstable (last_render_failed_at IS NULL).
+    Cached for 60s to avoid repeated heavy query when opening multiple plugin details.
+    """
+    global _safe_to_open_cache
+    now = time.time()
+    if _safe_to_open_cache is not None:
+        cached_ids, cached_at = _safe_to_open_cache
+        if now - cached_at < _SAFE_TO_OPEN_CACHE_TTL:
+            return cached_ids
+    try:
+        rows = query(
+            """SELECT id FROM projects p
+               WHERE p.last_render_failed_at IS NULL
+               AND p.id NOT IN (
+                 SELECT project_id FROM project_plugins pp
+                 WHERE LOWER(pp.plugin_name) NOT IN (
+                   SELECT LOWER(name) FROM installed_plugins WHERE is_active = 1
+                 )
+               )"""
+        )
+        result = {row["id"] for row in rows}
+        _safe_to_open_cache = (result, now)
+        return result
+    except Exception:
+        return set()
+
+
+def project_is_safe_to_open(project_id: int) -> bool:
+    """True if project is Safe to open (no missing plugins, not Unstable)."""
+    return project_id in get_safe_to_open_project_ids()
+
+
 def get_projects_using_plugin(plugin_name: str, limit: int = 50) -> List[Dict]:
     """Find all projects that use a specific plugin."""
     rows = query(
@@ -3018,6 +3146,40 @@ def get_projects_using_plugin(plugin_name: str, limit: int = 50) -> List[Dict]:
         (plugin_name, limit)
     )
     return [dict(row) for row in rows]
+
+
+def get_projects_using_plugin_for_triage(plugin_name: str, limit: int = 100) -> List[Dict]:
+    """
+    Projects using this plugin with columns needed for triage table:
+    heat (via play_count, open_count, last_opened_at, last_played_ts, file_created_at),
+    audibility (render_count / render_status), safety (last_render_failed_at).
+    Safe-to-open is computed in UI via get_safe_to_open_project_ids().
+    """
+    try:
+        # Prefer renders table for render count; fallback to tracks
+        test = query_one("SELECT name FROM sqlite_master WHERE type='table' AND name='renders'")
+        has_renders = test is not None
+        if has_renders:
+            render_count_sql = "(SELECT COUNT(*) FROM renders r WHERE r.project_id = p.id)"
+        else:
+            render_count_sql = "(SELECT COUNT(*) FROM tracks t WHERE t.project_id = p.id AND t.ext != '.flp')"
+        sql = f"""
+            SELECT DISTINCT p.id, p.name, p.path, p.state_id, p.score,
+                   p.play_count, p.open_count, p.last_opened_at, p.last_render_failed_at, p.last_render_failed_reason,
+                   p.render_status, p.file_created_at, p.updated_at, p.created_at,
+                   p.last_played_ts,
+                   {render_count_sql} AS render_count
+            FROM projects p
+            JOIN project_plugins pp ON p.id = pp.project_id
+            WHERE LOWER(pp.plugin_name) = LOWER(?)
+            ORDER BY COALESCE(p.updated_at, p.last_opened_at, p.created_at) DESC
+            LIMIT ?
+        """
+        rows = query(sql, (plugin_name.strip(), limit))
+        return [dict(row) for row in rows]
+    except Exception as e:
+        logger.debug("get_projects_using_plugin_for_triage: %s", e)
+        return []
 
 
 def get_missing_samples_report(limit: int = 100) -> List[Dict]:

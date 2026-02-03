@@ -1,6 +1,6 @@
 # System Patterns
 
-**Last Updated:** 2026-01-30
+**Last Updated:** 2026-02-02
 
 ## Architecture Overview
 
@@ -16,7 +16,7 @@ FruityWolf follows a **layered modular architecture** using PySide6 (Qt) for the
 ┌─────────────────────────────────────┐
 │   Domain Logic Layer                 │
 │   Scanner • Classifier • Player     │
-│   FLP Parser • Analysis • Waveform  │
+│   FLP Parser • Analysis • Render    │
 └─────────────────────────────────────┘
            ↕ SQL
 ┌─────────────────────────────────────┐
@@ -25,6 +25,34 @@ FruityWolf follows a **layered modular architecture** using PySide6 (Qt) for the
 │   Migrations • Cache                 │
 └─────────────────────────────────────┘
 ```
+
+---
+
+## Rendering Engine Architecture
+
+### Core Components
+- **FL Studio CLI**: Wraps `FL64.exe` execution. Not true headless (GUI opens), but automated via command line arguments (`/R`, `/Emp3`, `/M`, etc.).
+- **RenderJob**: Atomic unit of work containing source FLP, output settings, and status.
+- **RenderQueue**: Sequential execution engine. Processes one job at a time to prevent system overload and ensuring FL Studio stability.
+
+### Safety Protocols
+1.  **Mandatory Backup Exclusion**:
+    *   Path must NOT contain: `Backup`, `Autosave`, `Recovered`, `History`.
+    *   Filename must NOT match: `*backup*`, `*autosave*`.
+    *   Enforced in `backup_exclusion.py`, cannot be disabled by user.
+2.  **Deterministic Naming**:
+    *   Output is ALWAYS `{project_stem}__fw_preview.{ext}`.
+    *   Prevents accidental overwrites of user exports (e.g., `master.mp3`).
+3.  **Timeout Protection**:
+    *   Jobs auto-kill FL Studio process after 10 minutes (default).
+    *   Prevents hanging on missing plugins or modal dialogs.
+
+### Batch Processing Pattern
+For "Render Folder" operations:
+1.  **Recursive Scan**: Find all `.flp` files.
+2.  **Filter**: Apply backup exclusions.
+3.  **Queue**: Create `RenderJob` for each eligible project.
+4.  **Execute**: Run sequentially in background thread, updating UI via signals.
 
 ---
 
@@ -238,17 +266,17 @@ class ProjectsDelegate(QStyledItemDelegate):
 
 ### Classifier Module
 - **ProjectClassifier**: Rule-based engine
-- JSON-configurable rules
+- **JSON-configurable rules**
 - States: MICRO_IDEA → IDEA → WIP → PREVIEW_READY → ADVANCED
 
 ### Player Module
-- VLC backend (primary)
+- **VLC backend** (primary)
 - Qt Multimedia fallback
 - State machine: PLAYING, PAUSED, STOPPED
 
 ### Analysis Module
-- BPM detection (librosa)
-- Key detection (librosa)
+- **BPM detection** (librosa)
+- **Key detection** (librosa)
 - Background workers
 
 ---
@@ -257,7 +285,7 @@ class ProjectsDelegate(QStyledItemDelegate):
 
 ### Database
 - **SQLite** with WAL mode enabled
-- **23 migrations** for schema versioning (current: 23)
+- **25 migrations** for schema versioning (current: 25)
 - **FTS5** for full-text search
 - **Indexes** on frequently queried columns
 
@@ -429,6 +457,7 @@ app.py
 │   ├── identity/ (fingerprint, signals, identity_store)
 │   ├── adapters/ (base, fl_studio)
 │   └── flp_parser/
+├── rendering/ (engine, fl_cli, backup_exclusion)
 ├── player/ (audio_player)
 ├── classifier/ (engine)
 ├── database/ (models, migrations, project_metadata)

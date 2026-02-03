@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QGroupBox, QFileDialog, QScrollArea, QFrame, QSlider,
     QStackedWidget, QListWidget, QListWidgetItem
 )
-from PySide6.QtCore import Qt, Signal, QSize
+from PySide6.QtCore import Qt, Signal, QSize, QThread, QTimer
 from PySide6.QtGui import QColor, QIcon
 
 from ..database import get_setting, set_setting, query, execute
@@ -148,7 +148,7 @@ class SettingsView(QWidget):
         
         layout.addWidget(self.stack, 1)
         
-    def _create_page_container(self, title_text: str) -> (QWidget, QVBoxLayout):
+    def _create_page_container(self, title_text: str) -> tuple[QWidget, QVBoxLayout]:
         """Helper to create a standard settings page layout."""
         page = QWidget()
         page.setStyleSheet("background: transparent;")
@@ -519,24 +519,34 @@ class SettingsView(QWidget):
         return group
 
     def _scan_plugins(self):
-        """Trigger a plugin scan."""
+        """Trigger a plugin scan in a background thread so the UI never freezes."""
         self.scan_plugins_btn.setEnabled(False)
         self.scan_plugins_btn.setText(" Scanning...")
-        
-        # Run in a thread or just call it if it's fast enough 
-        # (It's synchronous so better to use a quick worker if we had one easily, 
-        # but for now let's just do it directly with UI feedback if it's not too long)
-        try:
-             count = scan_system_plugins()
-             self.scan_plugins_btn.setText(f" Scan Complete ({count} found)")
-        except Exception as e:
-             logger.error(f"Plugin scan failed: {e}")
-             self.scan_plugins_btn.setText(" Scan Failed")
-             
-        # Reset after 3 seconds
-        from PySide6.QtCore import QTimer
+
+        class PluginScanThread(QThread):
+            finished_count = Signal(int)
+
+            def run(self):
+                try:
+                    count = scan_system_plugins()
+                    self.finished_count.emit(count)
+                except Exception as e:
+                    logger.error("Plugin scan failed: %s", e, exc_info=True)
+                    self.finished_count.emit(-1)
+
+        self._plugin_scan_thread = PluginScanThread(self)
+        self._plugin_scan_thread.finished_count.connect(self._on_plugin_scan_finished)
+        self._plugin_scan_thread.finished.connect(self._plugin_scan_thread.deleteLater)
+        self._plugin_scan_thread.start()
+
+    def _on_plugin_scan_finished(self, count: int):
+        if count >= 0:
+            self.scan_plugins_btn.setText(f" Scan Complete ({count} found)")
+        else:
+            self.scan_plugins_btn.setText(" Scan Failed")
         QTimer.singleShot(3000, lambda: self.scan_plugins_btn.setText(" Scan Plugins Now"))
         QTimer.singleShot(3000, lambda: self.scan_plugins_btn.setEnabled(True))
+        self._plugin_scan_thread = None
 
     def _refresh_plugin_folder_list(self):
         """Re-render the plugin folder entries."""
@@ -617,7 +627,12 @@ class SettingsView(QWidget):
         self._save_setting('volume', str(value))
         
     def _browse_fl_path(self):
-        path = QFileDialog.getExistingDirectory(self, "Select FL Studio Installation Folder")
+        path, _ = QFileDialog.getOpenFileName(
+            self, 
+            "Select FL Studio Executable (FL64.exe)", 
+            "", 
+            "Executables (*.exe);;All Files (*)"
+        )
         if path:
             self.fl_path_edit.setText(path)
             self._save_setting('fl_studio_path', path)

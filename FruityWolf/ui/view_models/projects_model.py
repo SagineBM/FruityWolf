@@ -13,22 +13,24 @@ from PySide6.QtGui import QColor, QBrush, QIcon
 
 from ...classifier.engine import ProjectState
 from ...utils import format_smart_date, format_absolute_date
+from ...core.activity_heat import calculate_activity_heat, get_heat_color
 
 class ProjectsModel(QAbstractTableModel):
     """Table model for displaying projects."""
     
     # Columns
     COL_SELECT = 0
-    COL_STATE = 1
-    COL_NAME = 2
-    COL_SCORE = 3
-    COL_NEXT_ACTION = 4
-    COL_CREATED = 5      # Original file creation date
-    COL_LAST_PLAYED = 6  # When user last played this project
-    COL_RENDERS = 7      # Render count
-    COL_ACTIONS = 8
+    COL_NAME = 1
+    COL_HEAT = 2
+    COL_AUDIBILITY = 3
+    COL_SAFETY = 4
+    COL_LAST_TOUCHED = 5
+    COL_CREATED = 6
+    COL_PLAYS = 7
+    COL_OPENS = 8
+    COL_ACTIONS = 9
     
-    COLUMNS = ["", "STATE", "NAME", "SCORE", "NEXT ACTION", "CREATED", "PLAYED", "RENDERS", "ACTIONS"]
+    COLUMNS = ["", "NAME", "HEAT", "AUDIBILITY", "SAFETY", "LAST TOUCHED", "CREATED", "PLAYS", "OPENS", "ACTIONS"]
     
     def __init__(self, projects: List[Dict] = None, parent=None):
         super().__init__(parent)
@@ -53,6 +55,18 @@ class ProjectsModel(QAbstractTableModel):
         self._prepare_projects(projects)
         self._projects.extend(projects)
         self.endInsertRows()
+
+    def update_project(self, project_id: int, updated_dict: Dict) -> bool:
+        """Update a single project row by id (e.g. after render). Returns True if row was found."""
+        for i, p in enumerate(self._projects):
+            if p.get('id') == project_id:
+                self._projects[i] = updated_dict
+                self._prepare_projects([updated_dict])
+                top_left = self.index(i, 0)
+                bottom_right = self.index(i, self.columnCount() - 1)
+                self.dataChanged.emit(top_left, bottom_right, [])
+                return True
+        return False
         
     def _prepare_projects(self, projects: List[Dict]):
         """Pre-process project data for UI."""
@@ -68,6 +82,25 @@ class ProjectsModel(QAbstractTableModel):
             
             p['render_count'] = render_count
             p['has_render'] = bool(render_count > 0)
+            
+            # Calculate Activity Heat
+            # We use updated_at as proxy for flp_mtime if not available, 
+            # or try to get file_created_at if that's more appropriate for modification time? No.
+            # Ideally scanner puts flp_mtime in signals or we use updated_at.
+            # Using updated_at is safe as scanner updates it on scan.
+            flp_mtime = p.get('updated_at')
+            
+            heat_data = calculate_activity_heat(
+                flp_mtime=flp_mtime,
+                last_opened_at=p.get('last_opened_at'),
+                last_rendered_at=p.get('last_rendered_at'),
+                open_count=p.get('open_count', 0) or 0,
+                play_count=p.get('play_count', 0) or 0,
+                last_played_ts=p.get('last_played_ts')
+            )
+            p['heat_data'] = heat_data
+            p['heat_label'] = heat_data['label']
+            p['heat_score'] = heat_data['score']
             
             # Prepare confidence and lock data
             confidence_score = p.get('confidence_score')
@@ -122,75 +155,51 @@ class ProjectsModel(QAbstractTableModel):
         project = self._projects[row]
         
         if role == Qt.ItemDataRole.DisplayRole:
-            if col == self.COL_STATE:
-                return self._format_state(project.get('state_id'))
-            elif col == self.COL_NAME:
+            if col == self.COL_NAME:
                 return project.get('name', '')
-            elif col == self.COL_SCORE:
-                # Delegate will paint bar, but text helps sorting/accessibility
-                return str(project.get('score', 0))
-            elif col == self.COL_NEXT_ACTION:
-                # Delegate handles icon, text here
-                return ProjectState.format_action_id(project.get('next_action_id'))
+            elif col == self.COL_HEAT:
+                return project.get('heat_label', 'Cold')
+            elif col == self.COL_AUDIBILITY:
+                # Delegate renders dot
+                return ""
+            elif col == self.COL_SAFETY:
+                # Delegate renders dot
+                return ""
+            elif col == self.COL_LAST_TOUCHED:
+                data = project.get('heat_data', {})
+                ts = data.get('last_touch_ts')
+                return format_smart_date(ts) if ts else "-"
             elif col == self.COL_CREATED:
-                # Original file creation date (from FLP/folder)
                 ts = project.get('file_created_at') or project.get('created_at')
                 return format_smart_date(ts) if ts else "-"
-            elif col == self.COL_LAST_PLAYED:
-                # When user last played this project
-                ts = project.get('last_played_ts')
-                return format_smart_date(ts) if ts else "-"
-            elif col == self.COL_RENDERS:
-                count = project.get('render_count', 0)
-                return f"Renders ({count})" if count > 0 else "No renders"
+            elif col == self.COL_PLAYS:
+                return str(project.get('play_count', 0) or 0)
+            elif col == self.COL_OPENS:
+                return str(project.get('open_count', 0) or 0)
             elif col == self.COL_ACTIONS:
                 return ""
                 
         elif role == Qt.ItemDataRole.ToolTipRole:
-            if col == self.COL_STATE:
-                # Show confidence and lock status with match reasons
-                tooltip_parts = []
-                
-                # Lock status
-                if project.get('user_locked'):
-                    tooltip_parts.append("🔒 Locked (metadata protected)")
-                
-                # Confidence status
-                confidence = project.get('confidence_score', 100)
-                if confidence >= 80:
-                    tooltip_parts.append(f"✅ High confidence ({confidence}%)")
-                elif confidence >= 50:
-                    tooltip_parts.append(f"⚠️ Medium confidence ({confidence}%)")
-                elif confidence < 50:
-                    tooltip_parts.append(f"❓ Low confidence ({confidence}%)")
-                
-                # Match reasons
-                reasons = project.get('match_reasons', [])
-                if reasons:
-                    tooltip_parts.append("\nMatch reasons:")
-                    for reason in reasons[:3]:  # Top 3 reasons
-                        tooltip_parts.append(f"  • {reason}")
-                
-                return "\n".join(tooltip_parts) if tooltip_parts else None
+            if col == self.COL_HEAT:
+                data = project.get('heat_data', {})
+                return f"Score: {data.get('score', 0)}/100"
             elif col == self.COL_CREATED:
                 # Show exact date/time on hover (Windows Explorer style)
                 ts = project.get('file_created_at') or project.get('created_at')
                 if ts:
                     return f"Created: {format_absolute_date(ts)}"
                 return None
-            elif col == self.COL_LAST_PLAYED:
-                # Show exact date/time for last played
-                ts = project.get('last_played_ts')
-                if ts:
-                    return f"Last played: {format_absolute_date(ts)}"
-                return "Never played"
+            elif col == self.COL_AUDIBILITY:
+                ready = project.get('render_status') == 'preview_ready' or project.get('has_render')
+                return "Preview Ready" if ready else "Unheard"
+            elif col == self.COL_SAFETY:
+                failed = project.get('last_render_failed_at')
+                attempted = project.get('render_attempted_count', 0) > 0
+                if failed: return f"Unstable: {project.get('last_render_failed_reason')}"
+                if attempted: return "OK"
+                return "Unknown (Never rendered)"
             elif col == self.COL_NAME:
                 return project.get('path', '')
-            elif col == self.COL_RENDERS:
-                count = project.get('render_count', 0)
-                if count > 0:
-                    return f"Click to view {count} render(s)"
-                return "No renders available"
                 
         elif role == Qt.ItemDataRole.CheckStateRole:
             if col == self.COL_SELECT:
@@ -198,24 +207,20 @@ class ProjectsModel(QAbstractTableModel):
                 return Qt.CheckState.Checked if pid in self._checked_ids else Qt.CheckState.Unchecked
                 
         elif role == Qt.ItemDataRole.ForegroundRole:
-            if col == self.COL_STATE:
-                 return QBrush(self._get_state_color(project.get('state_id')))
+            if col == self.COL_HEAT:
+                label = project.get('heat_label', 'Cold')
+                return QBrush(QColor(get_heat_color(label)))
             elif col == self.COL_NAME:
                 return QBrush(QColor("#f1f5f9"))
             elif col == self.COL_CREATED:
                 return QBrush(QColor("#94a3b8"))
-            elif col == self.COL_LAST_PLAYED:
-                return QBrush(QColor("#64748b"))  # Slightly dimmer for played
-            elif col == self.COL_RENDERS:
-                count = project.get('render_count', 0)
-                if count > 0:
-                    return QBrush(QColor("#38bdf8"))  # Sky blue for clickable
-                return QBrush(QColor("#64748b"))  # Muted if no renders
+            elif col in [self.COL_LAST_TOUCHED, self.COL_PLAYS, self.COL_OPENS]:
+                return QBrush(QColor("#94a3b8"))
                 
         elif role == Qt.ItemDataRole.TextAlignmentRole:
-            if col in [self.COL_SCORE, self.COL_CREATED, self.COL_LAST_PLAYED, self.COL_RENDERS]:
+            if col in [self.COL_HEAT, self.COL_CREATED, self.COL_LAST_TOUCHED, self.COL_PLAYS, self.COL_OPENS, self.COL_AUDIBILITY, self.COL_SAFETY]:
                 return int(Qt.AlignmentFlag.AlignCenter)
-            elif col == self.COL_STATE:
+            elif col == self.COL_NAME:
                 return int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
                 
         elif role == Qt.ItemDataRole.UserRole:
@@ -317,22 +322,29 @@ class ProjectsModel(QAbstractTableModel):
         
         # Define sort key based on column
         def get_sort_key(project):
-            if column == self.COL_STATE:
-                return project.get('state_id', '') or ''
-            elif column == self.COL_NAME:
+            if column == self.COL_NAME:
                 return (project.get('name', '') or '').lower()
-            elif column == self.COL_SCORE:
-                return project.get('score', 0) or 0
-            elif column == self.COL_NEXT_ACTION:
-                return project.get('next_action_id', '') or ''
+            elif column == self.COL_HEAT:
+                return project.get('heat_score', 0)
+            elif column == self.COL_LAST_TOUCHED:
+                data = project.get('heat_data', {})
+                return data.get('last_touch_ts', 0)
             elif column == self.COL_CREATED:
                 # Use file_created_at for sorting (original file creation date)
                 return project.get('file_created_at') or project.get('created_at', 0) or 0
-            elif column == self.COL_LAST_PLAYED:
-                # Sort by last played timestamp
-                return project.get('last_played_ts', 0) or 0
-            elif column == self.COL_RENDERS:
-                return project.get('render_count', 0) or 0
+            elif column == self.COL_PLAYS:
+                return project.get('play_count', 0)
+            elif column == self.COL_OPENS:
+                return project.get('open_count', 0)
+            elif column == self.COL_AUDIBILITY:
+                return project.get('has_render', False)
+            elif column == self.COL_SAFETY:
+                # OK > Unknown > Failed
+                failed = project.get('last_render_failed_at')
+                attempted = project.get('render_attempted_count', 0) > 0
+                if failed: return 0 # Unstable
+                if attempted: return 2 # OK
+                return 1 # Unknown
             else:
                 return project.get('name', '') or ''
         

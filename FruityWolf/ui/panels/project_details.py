@@ -12,7 +12,8 @@ from typing import Optional, List, Dict, Any
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame,
     QScrollArea, QGridLayout, QGroupBox, QProgressBar, QTextEdit,
-    QLineEdit, QComboBox, QCheckBox, QSizePolicy, QFileDialog, QMenu
+    QLineEdit, QComboBox, QCheckBox, QSizePolicy, QFileDialog, QMenu,
+    QMessageBox, QInputDialog
 )
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QColor, QFont, QPixmap, QAction
@@ -24,6 +25,11 @@ from ...database import execute, query_one
 from ...services.cover_manager import (
     save_cover_image, set_project_cover, get_project_cover_path
 )
+from ...rendering.engine import get_render_queue, RenderJob, RenderStatus
+from ...rendering.fl_cli import resolve_fl_executable, get_expected_preview_path
+from ...rendering.backup_exclusion import is_eligible_flp
+from ...core.activity_heat import calculate_activity_heat, get_heat_color
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +38,7 @@ class ProjectDetailsPanel(QWidget):
     
     open_folder_clicked = Signal(str)
     open_flp_clicked = Signal(str)
+    project_updated = Signal(int)  # project_id, emitted after successful render so UI can refresh
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -105,71 +112,131 @@ class ProjectDetailsPanel(QWidget):
         self.date_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.main_layout.addWidget(self.date_label)
         
-        # 2. STATUS (State + Score)
-        self.status_group = QGroupBox("STATUS")
-        self.status_layout = QVBoxLayout(self.status_group)
-        self.status_layout.setSpacing(12)
-        
-        self.state_label = QLabel("Unknown")
-        self.state_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.state_label.setFixedHeight(28)
-        self.status_layout.addWidget(self.state_label)
-        
-        # Score
-        score_row = QHBoxLayout()
-        score_lbl = QLabel("Completion")
-        score_lbl.setStyleSheet("color: #94a3b8; font-size: 12px;")
-        score_row.addWidget(score_lbl)
-        
-        self.score_val = QLabel("0%")
-        self.score_val.setStyleSheet("color: #f1f5f9; font-weight: bold;")
-        score_row.addWidget(self.score_val)
-        score_row.addStretch()
-        self.status_layout.addLayout(score_row)
-        
-        self.score_bar = QProgressBar()
-        self.score_bar.setTextVisible(False)
-        self.score_bar.setFixedHeight(6)
-        self.status_layout.addWidget(self.score_bar)
-        
-        self.main_layout.addWidget(self.status_group)
-        
-        # 3. NEXT ACTION CTA
-        self.cta_frame = QFrame()
-        self.cta_frame.setObjectName("ctaFrame")
-        self.cta_frame.setStyleSheet("""
-            #ctaFrame {
-                background-color: #1e293b;
-                border: 1px solid #38bdf8;
+        # 2. TRUTH SIGNALS (Heat + Audibility + Safety)
+        self.signals_frame = QFrame()
+        self.signals_frame.setObjectName("signalsFrame")
+        self.signals_frame.setStyleSheet("""
+            #signalsFrame {
+                background-color: #0f172a;
+                border: 1px solid #334155;
                 border-radius: 8px;
             }
         """)
-        cta_layout = QVBoxLayout(self.cta_frame)
+        sig_layout = QVBoxLayout(self.signals_frame)
+        sig_layout.setContentsMargins(12, 12, 12, 12)
+        sig_layout.setSpacing(12)
         
-        lbl_next = QLabel("SUGGESTED NEXT STEP")
-        lbl_next.setStyleSheet("color: #38bdf8; font-size: 10px; font-weight: bold; letter-spacing: 1px;")
-        cta_layout.addWidget(lbl_next)
+        # Top Row: Heat Label + Badges
+        top_row = QHBoxLayout()
+        self.heat_label = QLabel("Cold")
+        self.heat_label.setStyleSheet("font-weight: bold; font-size: 14px; padding: 2px 8px; border-radius: 4px; background: #1e293b;")
+        top_row.addWidget(self.heat_label)
+        top_row.addStretch()
         
-        self.action_label = QLabel("Open Project")
-        self.action_label.setStyleSheet("color: white; font-size: 14px; font-weight: bold;")
-        self.action_label.setWordWrap(True)
-        cta_layout.addWidget(self.action_label)
+        self.audibility_badge = QLabel("Unheard")
+        self.audibility_badge.setStyleSheet("color: #94a3b8; font-size: 11px;")
+        top_row.addWidget(self.audibility_badge)
         
-        self.btn_do_action = QPushButton("Do It")
-        self.btn_do_action.setStyleSheet("""
+        self.safety_badge = QLabel("Unknown")
+        self.safety_badge.setStyleSheet("color: #94a3b8; font-size: 11px;")
+        top_row.addWidget(self.safety_badge)
+        
+        sig_layout.addLayout(top_row)
+        
+        # Stats Grid
+        stats_grid = QGridLayout()
+        stats_grid.setSpacing(12)
+        
+        self.lbl_last_touch = QLabel("Never")
+        self.lbl_plays = QLabel("0")
+        self.lbl_opens = QLabel("0")
+        
+        def add_stat_lbl(row, col, label, value_widget):
+            l = QLabel(label)
+            l.setStyleSheet("color: #64748b; font-size: 10px; font-weight: bold;")
+            value_widget.setStyleSheet("color: #e2e8f0; font-size: 12px;")
+            stats_grid.addWidget(l, row, col)
+            stats_grid.addWidget(value_widget, row + 1, col)
+            
+        add_stat_lbl(0, 0, "LAST TOUCHED", self.lbl_last_touch)
+        add_stat_lbl(0, 1, "PLAYS", self.lbl_plays)
+        add_stat_lbl(0, 2, "OPENS", self.lbl_opens)
+        
+        sig_layout.addLayout(stats_grid)
+        self.main_layout.addWidget(self.signals_frame)
+        
+        # 3. ACTIONS (Replaces Next Action CTA)
+        self.actions_frame = QFrame()
+        self.actions_frame.setObjectName("actionsFrame")
+        self.actions_frame.setStyleSheet("""
+            #actionsFrame {
+                background-color: #1e293b;
+                border: 1px solid #334155;
+                border-radius: 8px;
+            }
+        """)
+        actions_layout = QVBoxLayout(self.actions_frame)
+        actions_layout.setSpacing(8)
+        
+        lbl_actions = QLabel("ACTIONS")
+        lbl_actions.setStyleSheet("color: #94a3b8; font-size: 10px; font-weight: bold; letter-spacing: 1px;")
+        actions_layout.addWidget(lbl_actions)
+        
+        # Primary Action: Open FLP
+        self.btn_flp = QPushButton(" Open Project in FL Studio")
+        self.btn_flp.setIcon(get_icon("fl_studio", QColor("#0f172a"), 16))
+        self.btn_flp.setStyleSheet("""
             QPushButton {
                 background-color: #38bdf8;
                 color: #0f172a;
                 font-weight: bold;
                 border-radius: 4px;
-                padding: 6px;
+                padding: 8px;
+                font-size: 13px;
+                text-align: left;
+                padding-left: 12px;
             }
             QPushButton:hover { background-color: #7dd3fc; }
         """)
-        self.btn_do_action.clicked.connect(self._on_open_flp) # Default logic
-        cta_layout.addWidget(self.btn_do_action)
+        self.btn_flp.clicked.connect(self._on_open_flp)
+        actions_layout.addWidget(self.btn_flp)
         
-        self.main_layout.addWidget(self.cta_frame)
+        # Secondary Actions: Render, Folder
+        row_sec = QHBoxLayout()
+        row_sec.setSpacing(8)
+        
+        self.btn_render = QPushButton(" Render Preview")
+        self.btn_render.setIcon(get_icon("play_circle", QColor("#e2e8f0"), 16))
+        self.btn_render.setStyleSheet("""
+            QPushButton {
+                background-color: #334155;
+                color: #e2e8f0;
+                border-radius: 4px;
+                padding: 6px;
+                font-size: 12px;
+            }
+            QPushButton:hover { background-color: #475569; }
+        """)
+        self.btn_render.clicked.connect(self._on_render_preview)
+        row_sec.addWidget(self.btn_render)
+        
+        self.btn_folder = QPushButton(" Folder")
+        self.btn_folder.setIcon(get_icon("folder_open", QColor("#e2e8f0"), 16))
+        self.btn_folder.setStyleSheet("""
+            QPushButton {
+                background-color: #334155;
+                color: #e2e8f0;
+                border-radius: 4px;
+                padding: 6px;
+                font-size: 12px;
+            }
+            QPushButton:hover { background-color: #475569; }
+        """)
+        self.btn_folder.clicked.connect(self._on_open_folder)
+        row_sec.addWidget(self.btn_folder)
+        
+        actions_layout.addLayout(row_sec)
+        self.main_layout.addWidget(self.actions_frame)
         
         # 4. PROJECT MEMORY
         self.memory_group = QGroupBox("PROJECT MEMORY")
@@ -229,18 +296,7 @@ class ProjectDetailsPanel(QWidget):
         self.size_label = self._add_stat("Size", 1, 0)
         self.main_layout.addWidget(self.stats_group)
         
-        # 6. ACTIONS (Folder/FLP)
-        self.actions_layout = QVBoxLayout()
-        self.btn_folder = QPushButton(" Open Folder")
-        self.btn_folder.setIcon(get_icon("folder_open", QColor("#94a3b8"), 16))
-        self.btn_folder.clicked.connect(self._on_open_folder)
-        self.actions_layout.addWidget(self.btn_folder)
-        
-        self.btn_flp = QPushButton(" Open FLP")
-        self.btn_flp.setIcon(get_icon("fl_studio", QColor("#94a3b8"), 16))
-        self.btn_flp.clicked.connect(self._on_open_flp)
-        self.actions_layout.addWidget(self.btn_flp)
-        self.main_layout.addLayout(self.actions_layout)
+        # 6. (ACTIONS moved to top, removing old actions block)
         
         # 7. DEBUG
         self.chk_debug = QCheckBox("Debug Mode")
@@ -316,26 +372,67 @@ class ProjectDetailsPanel(QWidget):
         self.date_label.setText(format_smart_date(created_ts))
         self.date_label.setToolTip(f"Created: {format_absolute_date(created_ts)}")
         
-        # State
-        state = project.get('state_id') or project.get('state') or 'Unknown'
-        self.state_label.setText(state.replace("_", " ").title().replace("Or", "/"))
-        self.state_label.setStyleSheet(f"""
-            background-color: {self._get_state_color_hex(state)}33; 
-            color: {self._get_state_color_hex(state)}; 
-            border-radius: 12px; 
-            padding: 4px 12px;
-            font-weight: bold;
-            border: 1px solid {self._get_state_color_hex(state)}66;
-        """)
+        # --- TRUTH SIGNALS ---
         
-        # Score
-        score = project.get('score') or project.get('render_priority_score') or 0
-        self.score_val.setText(f"{score}%")
-        self.score_bar.setValue(score)
+        # 1. Activity Heat
+        # Use pre-calculated heat_data from model if available, otherwise calculate
+        heat_data = project.get('heat_data')
+        if not heat_data:
+            flp_mtime = project.get('updated_at')
+            heat_data = calculate_activity_heat(
+                flp_mtime=flp_mtime,
+                last_opened_at=project.get('last_opened_at'),
+                last_rendered_at=project.get('last_rendered_at'),
+                open_count=project.get('open_count', 0) or 0,
+                play_count=project.get('play_count', 0) or 0
+            )
+            
+        heat_label = heat_data['label']
+        heat_score = heat_data['score']
+        heat_color = get_heat_color(heat_label)
+        
+        self.heat_label.setText(heat_label.upper())
+        self.heat_label.setStyleSheet(f"font-weight: bold; font-size: 14px; padding: 2px 8px; border-radius: 4px; background: {heat_color}; color: #0f172a;")
+        self.heat_label.setToolTip(f"Activity Heat: {heat_score}/100")
+        
+        # 2. Audibility
+        is_preview_ready = project.get('render_status') == 'preview_ready' or project.get('has_render')
+        if is_preview_ready:
+            self.audibility_badge.setText("● Preview Ready")
+            self.audibility_badge.setStyleSheet("color: #22c55e; font-weight: bold; font-size: 11px;")
+        else:
+            self.audibility_badge.setText("○ Unheard")
+            self.audibility_badge.setStyleSheet("color: #64748b; font-size: 11px;")
+            
+        # 3. Safety
+        last_failed = project.get('last_render_failed_at')
+        attempted = project.get('render_attempted_count', 0) > 0
+        
+        if last_failed:
+            self.safety_badge.setText("● Unstable")
+            self.safety_badge.setStyleSheet("color: #ef4444; font-weight: bold; font-size: 11px;")
+            reason = project.get('last_render_failed_reason', 'Unknown error')
+            self.safety_badge.setToolTip(f"Last render failed: {reason}")
+        elif attempted:
+            self.safety_badge.setText("● OK")
+            self.safety_badge.setStyleSheet("color: #22c55e; font-weight: bold; font-size: 11px;")
+            self.safety_badge.setToolTip("Last render successful")
+        else:
+            self.safety_badge.setText("○ Unknown")
+            self.safety_badge.setStyleSheet("color: #64748b; font-size: 11px;")
+            self.safety_badge.setToolTip("No renders attempted")
+            
+        # 4. Stats
+        last_touch_ts = heat_data.get('last_touch_ts')
+        self.lbl_last_touch.setText(format_smart_date(last_touch_ts) if last_touch_ts else "Never")
+        self.lbl_plays.setText(str(project.get('play_count', 0) or 0))
+        self.lbl_opens.setText(str(project.get('open_count', 0) or 0))
         
         # Next Action
-        next_action = project.get('next_action_id', '')
-        self.action_label.setText(ProjectState.format_action_id(next_action) or "Open Project")
+        # Replaced by ACTIONS frame, but logic remains in model for reference
+        # We can remove this block if we don't display "Next Action" text specifically
+        # The user wanted buttons instead of "Do It"
+        pass
         
         # Memory
         meta_json = project.get('user_meta')
@@ -353,11 +450,6 @@ class ProjectDetailsPanel(QWidget):
         else:
             self.txt_todo.setText(str(todo_list))
             
-        # Stats
-        self.size_label.setText(f"{project.get('flp_size_kb', 0)} KB")
-        self.audio_count_label.setText(str(project.get('audio_folder_count', '-')))
-        self.backup_count_label.setText(str(project.get('backup_count', '-')))
-        
         # Debug
         if self.chk_debug.isChecked():
             self._update_debug_info()
@@ -366,7 +458,116 @@ class ProjectDetailsPanel(QWidget):
         flp_path = project.get('flp_path')
         has_flp = bool(flp_path) and os.path.exists(flp_path)
         self.btn_flp.setEnabled(has_flp)
-        self.btn_folder.setEnabled(bool(project.get('path')))
+        self.btn_render.setEnabled(has_flp)
+        self.btn_folder.setEnabled(bool(project.get('path') or project.get('flp_path')))
+
+    def _on_render_preview(self):
+        """Handle single project render request."""
+        if not self.current_project or not self.current_project.get('flp_path'):
+            return
+            
+        flp_path = Path(self.current_project.get('flp_path'))
+        
+        # 1. Resolve FL Exe
+        if not resolve_fl_executable():
+            QMessageBox.warning(
+                self, 
+                "FL Studio Not Found", 
+                "Please configure the FL Studio executable path in Settings."
+            )
+            return
+
+        # 2. Check Backup Exclusion
+        if not is_eligible_flp(flp_path):
+            QMessageBox.warning(
+                self,
+                "Cannot Render Backup",
+                "This project appears to be a backup or autosave.\n"
+                "Rendering is disabled for safety."
+            )
+            return
+
+        # 3. Format selection
+        format_options = ("MP3", "WAV")
+        format_choice, ok = QInputDialog.getItem(
+            self,
+            "Render Preview",
+            "Output format:",
+            format_options,
+            0,
+            False
+        )
+        if not ok:
+            return
+        format_type = format_choice.strip().lower() if format_choice else "mp3"
+        if format_type not in ("mp3", "wav"):
+            format_type = "mp3"
+            
+        # 4. Confirmation
+        preview_path = get_expected_preview_path(flp_path, format_type)
+        msg = (
+            f"Ready to render preview for:\n{self.current_project.get('name')}\n\n"
+            f"Format: {format_type.upper()}\n"
+            f"Output: {preview_path.name}\n\n"
+            "WARNING:\n"
+            "• FL Studio will open visibly and may take focus.\n"
+            "• If plugins/samples are missing, it may block.\n"
+            "• No existing user files will be touched (only __fw_preview).\n"
+            "\nProceed?"
+        )
+        
+        reply = QMessageBox.question(
+            self, 
+            "Render Preview", 
+            msg,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            job = RenderJob(
+                source_flp=flp_path,
+                job_type='audio',
+                format_type=format_type
+            )
+            queue = get_render_queue()
+            
+            # Connect signals for immediate feedback (simple approach for now)
+            # Ideally we'd have a global job monitor, but for single project this works
+            queue.job_started.connect(self._on_render_started)
+            queue.job_finished.connect(self._on_render_finished)
+            
+            queue.add_job(job)
+            queue.start_queue()
+            
+            self.btn_render.setText("Queueing...")
+            self.btn_render.setEnabled(False)
+
+    def _on_render_started(self, job: RenderJob):
+        if self.current_project and str(job.source_flp) == self.current_project.get('flp_path'):
+            self.btn_render.setText("Rendering...")
+            
+    def _on_render_finished(self, job: RenderJob):
+        # Disconnect signals to avoid duplicates next time
+        # (This is a bit quick-and-dirty, cleaner would be a dedicated job manager UI)
+        try:
+            queue = get_render_queue()
+            queue.job_started.disconnect(self._on_render_started)
+            queue.job_finished.disconnect(self._on_render_finished)
+        except:
+            pass
+            
+        if self.current_project and str(job.source_flp) == self.current_project.get('flp_path'):
+            self.btn_render.setEnabled(True)
+            self.btn_render.setText(" Render Preview...")
+            
+            if job.status == RenderStatus.COMPLETED:
+                QMessageBox.information(self, "Render Complete", "Preview rendered successfully!")
+                project_id = self.current_project.get('id')
+                if project_id is not None:
+                    self.project_updated.emit(project_id)
+            else:
+                QMessageBox.warning(self, "Render Failed", f"Render failed: {job.error_message}")
 
     def _save_memory(self):
         if not self.current_project: return
@@ -433,9 +634,16 @@ class ProjectDetailsPanel(QWidget):
         self.cover_btn.hide()
         self.title_label.setText("Select a project")
         self.date_label.setText("")
-        self.state_label.setText("Unknown")
-        self.score_val.setText("0%")
-        self.score_bar.setValue(0)
+        
+        # Clear Truth Signals
+        self.heat_label.setText("Cold")
+        self.heat_label.setStyleSheet("font-weight: bold; font-size: 14px; padding: 2px 8px; border-radius: 4px; background: #1e293b; color: #94a3b8;")
+        self.audibility_badge.setText("Unknown")
+        self.safety_badge.setText("Unknown")
+        self.lbl_last_touch.setText("-")
+        self.lbl_plays.setText("0")
+        self.lbl_opens.setText("0")
+        
         self.txt_vision.clear()
         self.txt_todo.clear()
         self.inp_moods.clear()
@@ -453,12 +661,15 @@ class ProjectDetailsPanel(QWidget):
         return map_.get(state, "#f1f5f9")
     
     def _on_open_folder(self):
-        if self.current_project and self.current_project.get('path'):
-            self.open_folder_clicked.emit(self.current_project.get('path'))
+        path = (self.current_project.get('path') or
+                (os.path.dirname(self.current_project.get('flp_path') or '')
+                 if self.current_project.get('flp_path') else None))
+        if self.current_project and path:
+            self.open_folder_clicked.emit(self.current_project)
 
     def _on_open_flp(self):
         if self.current_project and self.current_project.get('flp_path'):
-            self.open_flp_clicked.emit(self.current_project.get('flp_path'))
+            self.open_flp_clicked.emit(self.current_project)
 
     def _on_image_loaded(self, path: str, pixmap: QPixmap, request_id: str):
         """Update cover if it matches current project."""

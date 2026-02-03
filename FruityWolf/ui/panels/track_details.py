@@ -280,7 +280,17 @@ class TrackDetailsPanel(QWidget):
             }
         """)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setProperty("folder_path", "")
+        btn.clicked.connect(self._on_folder_btn_clicked)
         return btn
+
+    def _on_folder_btn_clicked(self):
+        """Emit open_folder with path from sender (avoids disconnect/connect per track)."""
+        btn = self.sender()
+        if btn and isinstance(btn, QPushButton):
+            path = btn.property("folder_path")
+            if path:
+                self.open_folder_clicked.emit(path)
         
     def set_track(self, track: dict):
         """Display track data."""
@@ -376,19 +386,8 @@ class TrackDetailsPanel(QWidget):
         import os
         exists = bool(path and os.path.exists(path))
         btn.setEnabled(exists)
-        if exists:
-            btn.setToolTip(path)
-            # disconnect specific previous? 
-            # simplest is to just use a property or dynamic lambda, 
-            # but lambda in loop/func is tricky.
-            # actually we can use setProperty param
-            btn.setProperty("folder_path", path)
-            try:
-                btn.clicked.disconnect() 
-            except: pass
-            btn.clicked.connect(lambda: self.open_folder_clicked.emit(path))
-        else:
-            btn.setToolTip("Folder not found")
+        btn.setProperty("folder_path", path or "")
+        btn.setToolTip(path if exists else "Folder not found")
         
     def clear(self):
         """Reset fields."""

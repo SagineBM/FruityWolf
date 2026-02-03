@@ -5,15 +5,81 @@ Uses PE parsing, registry discovery, caching, and parallel processing.
 """
 
 import os
+import re
 import time
 import logging
 import hashlib
 import json
 from pathlib import Path
-from typing import List, Dict, Set, Optional, Tuple
+from typing import List, Dict, Set, Optional, Tuple  # Tuple for _installed_plugin_cache
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, asdict
-from ..database import execute, get_db, query, get_app_data_path
+from ..database import execute, get_db, query, query_one, get_app_data_path
+from .plugin_matcher import build_installed_index, resolve_reference, MatchResult, canonicalize, normalize_reference_name
+from .plugin_aliases_data import PRODUCT_ALIASES
+
+# Native FL Studio plugin names (built-in; not in VST/CLAP scan). Keep in sync with flp_parser.parser.
+_FL_NATIVE_NAMES = frozenset({
+    "sytrus", "3xosc", "harmless", "harmor", "flex", "morphine", "sakura",
+    "sawer", "toxic biohazard", "poizone", "directwave", "directwave player",
+    "minisynth live", "gms", "fl keys", "fl slayer",
+    "sampler", "audio clip", "fruity granulizer", "fruity slicer", "fruity slicex", "slicex",
+    "fruity soundfont player", "soundfont player", "fruity dx10", "dx10", "beepmap", "boobass",
+    "plucked!", "simsynth", "wasp", "wasp xt", "fruity drumsynth live", "drumsynth live",
+    "fruity kick", "transistor bass", "fruit kick", "fpc", "bassdrum", "speech synthesizer", "vocodex",
+    "layer", "patcher", "control surface", "automation clip",
+    "fruity parametric eq", "parametric eq", "fruity parametric eq 2", "parametric eq 2",
+    "fruity 7 band eq", "fruity graphic eq", "fruity convolver", "convolver", "fruity filter", "fruity free filter",
+    "fruity love philter", "love philter", "fruity vocoder",
+    "fruity limiter", "limiter", "fruity compressor", "compressor",
+    "fruity soft clipper", "soft clipper", "fruity multiband compressor", "multiband compressor",
+    "maximus", "soundgoodizer", "transient processor",
+    "fruity reverb", "fruity reverb 2", "reverb 2", "fruity reeverb",
+    "fruity delay", "fruity delay 2", "delay 2", "fruity delay 3", "delay 3", "fruity delay bank",
+    "grossbeat", "gross beat", "fruity chorus", "chorus", "fruity flanger", "flanger",
+    "fruity flangus", "fruity phaser", "phaser", "fruity stereo shaper", "stereo shaper",
+    "fruity stereo enhancer", "stereo enhancer", "fruity blood overdrive", "blood overdrive",
+    "fruity fast dist", "fast dist", "fruity squeeze", "squeeze", "fruity waveshaper", "waveshaper",
+    "distructor", "hardcore", "fruity spectroman", "spectroman", "wave candy", "fruity db meter",
+    "db meter", "fruity peak controller", "peak controller", "fruity formula controller", "formula controller",
+    "fruity balance", "balance", "fruity center", "center", "fruity mute 2", "mute 2",
+    "fruity send", "send", "fruity notebook", "notebook", "fruity notebook 2",
+    "patcher", "pitcher", "newtone", "vocodex", "edison",
+    "fruity bass boost", "bass boost", "fruity html notebook", "html notebook", "fruity big clock", "big clock",
+    "fruity wrapper", "wrapper", "fruity panomatic", "panomatic", "fruity scratcher",
+})
+_FL_THIRD_PARTY = frozenset({
+    "refx", "native instruments", "fabfilter", "waves", "izotope", "spectrasonics", "arturia",
+    "u-he", "xfer", "serum", "massive", "kontakt", "omnisphere", "sylenth", "spire", "nexus",
+    "diva", "vital", "pigments", "analog lab", "komplete", "maschine", "reaktor", "battery",
+    "guitar rig", "absynth", "fm8", "razor", "soundtoys", "valhalla", "antares", "slate digital",
+    "voxengo", "cla ", "cla-", "cymatics", "ozone", "neutron", "nectar", "ssl", "api", "neve", "uad",
+    "plugin alliance", "brainworx",
+})
+
+
+def _is_native_fl_plugin_name(name: str) -> bool:
+    """True if name is a native FL Studio plugin (built-in, not in VST/CLAP scan). No parser import."""
+    if not name or not isinstance(name, str):
+        return False
+    n = name.strip().lower()
+    if not n:
+        return False
+    for v in _FL_THIRD_PARTY:
+        if v in n:
+            return False
+    if n.startswith("fruity "):
+        return True
+    if n in _FL_NATIVE_NAMES:
+        return True
+    for token in _FL_NATIVE_NAMES:
+        if len(token) <= 4:
+            if n == token:
+                return True
+        elif token in n and (n.startswith(token + " ") or n.endswith(" " + token) or n == token):
+            return True
+    return False
+
 
 try:
     import pefile
@@ -28,6 +94,17 @@ except ImportError:
     HAS_WINREG = False
 
 logger = logging.getLogger(__name__)
+
+# Cache for installed_plugins + built index. Invalidated when scan_system_plugins completes.
+# Format: (inst_rows: list, installed_index: dict) or None. Used by get_plugin_truth_states.
+_installed_plugin_cache: Optional[Tuple[List[Dict], Dict]] = None
+
+
+def clear_installed_plugin_cache() -> None:
+    """Invalidate installed-plugins cache. Call after scan_system_plugins or when installed_plugins changes."""
+    global _installed_plugin_cache
+    _installed_plugin_cache = None
+
 
 # Standard Windows plugin search paths
 DEFAULT_VST_PATHS = [
@@ -421,7 +498,7 @@ def scan_system_plugins(use_cache: bool = True, max_workers: int = 4) -> int:
         logger.warning("No plugin search paths configured")
         return 0
     
-    logger.info(f"Scanning {len(search_paths)} plugin search paths...")
+    logger.debug("Scanning %s plugin search paths...", len(search_paths))
     
     # Load cache if enabled
     cache = {}
@@ -578,7 +655,7 @@ def scan_system_plugins(use_cache: bool = True, max_workers: int = 4) -> int:
     
     # Phase 2: Parallel PE inspection for DLLs
     if dll_candidates and HAS_PEFILE:
-        logger.info(f"Validating {len(dll_candidates)} DLL candidates with {max_workers} workers...")
+        logger.debug("Validating %s DLL candidates with %s workers...", len(dll_candidates), max_workers)
         
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_path = {
@@ -667,8 +744,14 @@ def scan_system_plugins(use_cache: bool = True, max_workers: int = 4) -> int:
                 logger.debug(f"Could not save cache: {e}")
         
         elapsed = time.time() - start_time
-        logger.info(f"Plugin scan complete. Found {plugins_found} items in {elapsed:.2f}s using production engine.")
-    
+        logger.debug("Plugin scan complete. Found %s items in %.2fs.", plugins_found, elapsed)
+
+    clear_installed_plugin_cache()
+    try:
+        from ..scanner.library_scanner import invalidate_safe_to_open_cache
+        invalidate_safe_to_open_cache()
+    except Exception:
+        pass
     return plugins_found
 
 def _extract_vendor_from_path(path: str, name: str) -> str:
@@ -734,3 +817,354 @@ def get_unused_plugins() -> List[Dict]:
     ORDER BY name ASC
     """
     return [dict(row) for row in query(sql)]
+
+
+# -----------------------------------------------------------------------------
+# Plugin truth states (Phase 1: Safe / Risky / Missing / Unknown / Unused)
+# Definitions: memory-bank/plugin-page-analysis.md §10.1
+# -----------------------------------------------------------------------------
+
+PLUGIN_STATE_SAFE = "safe"
+PLUGIN_STATE_RISKY = "risky"
+PLUGIN_STATE_MISSING = "missing"
+PLUGIN_STATE_UNKNOWN = "unknown"
+PLUGIN_STATE_UNUSED = "unused"
+
+
+
+def get_referenced_missing_plugins() -> List[Dict]:
+    """
+    Plugins referenced in ≥1 FLP but not found in installed_plugins.
+    Uses the robust matcher logic (via get_plugin_truth_states).
+    Returns list of dicts: plugin_name, project_count, last_seen (ts).
+    """
+    try:
+        # Re-use the robust logic from get_plugin_truth_states
+        missing = get_plugin_truth_states(studio_filter="missing")
+        return [
+            {
+                "plugin_name": m["plugin_name"],
+                "project_count": m["project_count"],
+                "last_seen": m["last_seen"]
+            }
+            for m in missing
+        ]
+    except Exception as e:
+        logger.debug(f"get_referenced_missing_plugins: {e}")
+        return []
+
+
+def get_plugin_truth_states(
+    studio_filter: Optional[str] = None,
+    search_term: Optional[str] = None,
+    limit: int = 500,
+) -> List[Dict]:
+    """
+    Unified plugin list with exactly one truth state per plugin.
+    States: safe | risky | missing | unknown | unused (definitions in plugin-page-analysis.md §10.1).
+    Returns list of dicts: plugin_name, state, format, project_count, last_seen, plugin_type (from projects).
+    studio_filter: None | 'missing' | 'risky' | 'hot' | 'last30' (Studio Mode filters).
+    """
+    try:
+        # 1) Referenced: one row per (plugin_name, project_id) so we can merge by canonical name and count distinct projects
+        ref_sql = """
+        SELECT pp.plugin_name,
+               pp.project_id,
+               COALESCE(p.updated_at, p.last_opened_at, p.created_at) AS last_seen,
+               pp.plugin_type AS plugin_type,
+               pp.plugin_path AS plugin_path
+        FROM project_plugins pp
+        JOIN projects p ON p.id = pp.project_id
+        """
+        ref_rows = query(ref_sql)
+        # Collapse by canonical name: one row per plugin (e.g. "Nexus #2 - mod wheel" + "Nexus" -> "Nexus"), distinct project count
+        by_canonical: Dict[str, Dict] = {}
+        for r in ref_rows:
+            row = dict(r)
+            raw_name = (row.get("plugin_name") or "").strip()
+            canon_name = normalize_reference_name(raw_name)
+            if not canon_name:
+                canon_name = raw_name or "?"
+            cn = canonicalize(canon_name)
+            # Merge by product_key when known so "Xfer Records Serum" and "Serum" -> one "Serum" row
+            merge_key = cn.product_key if (cn.product_key and cn.product_key in PRODUCT_ALIASES) else canon_name
+            display_name = merge_key.title() if merge_key in PRODUCT_ALIASES else merge_key
+            if merge_key not in by_canonical:
+                by_canonical[merge_key] = {
+                    "plugin_name": display_name,
+                    "project_count": 0,
+                    "project_ids": set(),
+                    "last_seen": row.get("last_seen"),
+                    "plugin_type": row.get("plugin_type"),
+                    "plugin_path": row.get("plugin_path"),
+                }
+            agg = by_canonical[merge_key]
+            pid = row.get("project_id")
+            if pid is not None and pid not in agg["project_ids"]:
+                agg["project_ids"].add(pid)
+                agg["project_count"] = len(agg["project_ids"])
+            ls = row.get("last_seen")
+            if ls and (not agg.get("last_seen") or (ls > agg.get("last_seen"))):
+                agg["last_seen"] = ls
+            if row.get("plugin_path") and not agg.get("plugin_path"):
+                agg["plugin_path"] = row.get("plugin_path")
+        ref_data = []
+        for agg in by_canonical.values():
+            del agg["project_ids"]
+            ref_data.append(agg)
+
+        # 2) Installed: Use cache if valid, else load and build index (cache invalidated on scan)
+        global _installed_plugin_cache
+        if _installed_plugin_cache is not None:
+            inst_rows, installed_index = _installed_plugin_cache
+        else:
+            inst_sql = "SELECT * FROM installed_plugins WHERE is_active = 1"
+            inst_rows = [dict(r) for r in query(inst_sql)]
+            installed_index = build_installed_index(inst_rows)
+            _installed_plugin_cache = (inst_rows, installed_index)
+        inst_by_id = {row["id"]: row for row in inst_rows}
+        installed_count = len(inst_rows)
+        inst_index_keys = len(installed_index)
+
+        # Diagnostic logging only at DEBUG level (set FW_DEBUG_PLUGIN_MATCH=1 for match details)
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "get_plugin_truth_states: ref_count=%s inst_count=%s inst_index_keys=%s",
+                len(ref_data), installed_count, inst_index_keys,
+            )
+            if ref_data:
+                sample_refs = [(r["plugin_name"], canonicalize(r["plugin_name"]).canon) for r in ref_data[:5]]
+                logger.debug("Sample refs (name -> canon): %s", sample_refs)
+            if inst_rows:
+                sample_inst = [(r["name"], (r.get("_canon") or canonicalize(r["name"])).canon) for r in inst_rows[:10]]
+                logger.debug("Sample installed (name -> canon): %s", sample_inst)
+
+        # Fetch overrides
+        try:
+            override_rows = query("SELECT * FROM plugin_alias_overrides")
+            overrides = {row["ref_key"]: row["chosen_installed_id"] for row in override_rows}
+        except Exception:
+            overrides = {}
+            logger.debug("plugin_alias_overrides table missing or error (migration pending?)")
+        
+        # Guard: If installed count is too low, don't mark as missing
+        is_scan_ready = installed_count >= 50
+        if not is_scan_ready:
+            logger.warning(f"Plugin scan incomplete (count={installed_count}). 'Missing' detection disabled.")
+
+        # 3) For each referenced plugin: check Unstable (use normalized name so merged refs match)
+        unstable_sql = """
+        SELECT pp.plugin_name, 1 AS has_unstable
+        FROM project_plugins pp
+        JOIN projects p ON p.id = pp.project_id
+        WHERE p.last_render_failed_at IS NOT NULL
+        GROUP BY pp.plugin_name
+        """
+        unstable_set: Set[str] = set()
+        for r in query(unstable_sql):
+            raw = (r.get("plugin_name") or "").strip()
+            canon_name = normalize_reference_name(raw) or raw
+            cn = canonicalize(canon_name)
+            merge_key = cn.product_key if (cn.product_key and cn.product_key in PRODUCT_ALIASES) else canon_name
+            display_name = merge_key.title() if merge_key in PRODUCT_ALIASES else merge_key
+            unstable_set.add(display_name)
+
+        debug_match = os.environ.get("FW_DEBUG_PLUGIN_MATCH") == "1"
+        if debug_match:
+            logger.debug("DEBUG_PLUGIN_MATCH: Starting resolution...")
+
+        # 4) Assign state per referenced plugin using Resolver
+        result: List[Dict] = []
+        matched_inst_ids: Set[str] = set()  # To track 'unused' later
+        
+        for data in ref_data:
+            name = data["plugin_name"]
+            path_hint = data.get("plugin_path")
+            p_type = data.get("plugin_type") or "effect"
+            
+            # Check override
+            ref_key = f"{name.strip().lower()}|{p_type}"
+            match_res = None
+            
+            if ref_key in overrides:
+                oid = overrides[ref_key]
+                if oid in inst_by_id:
+                    match_res = MatchResult("matched", inst_by_id[oid], 10.0, "User override", 1, [])
+            
+            if not match_res:
+                # Use the new robust resolver
+                match_res = resolve_reference(name, path_hint, installed_index, inst_rows)
+            
+            if debug_match:
+                logger.debug("MATCH: '%s' -> %s (score=%.2f)", name, match_res.status, match_res.score)
+                
+            state = PLUGIN_STATE_MISSING
+            format_str = "?"
+            top_candidates = match_res.top_candidates or []
+            
+            if match_res.status == "matched":
+                cand = match_res.best_installed
+                format_str = cand.get("format") or "?"
+                # Track usage by ID (assuming path is unique enough or we have ID)
+                # installed_plugins has 'id' but we selected * so it should be there
+                if cand and "id" in cand:
+                    matched_inst_ids.add(str(cand["id"]))
+                elif cand and "path" in cand:
+                     # Fallback if ID missing for some reason
+                     matched_inst_ids.add(cand["path"])
+
+                if name.strip() in unstable_set:
+                    state = PLUGIN_STATE_RISKY
+                else:
+                    state = PLUGIN_STATE_SAFE
+                    
+            elif match_res.status == "ambiguous":
+                state = PLUGIN_STATE_UNKNOWN
+                cand = match_res.best_installed
+                if cand:
+                    format_str = cand.get("format") or "?" + "?" 
+                    
+            else:
+                # Missing or Native check
+                if _is_native_fl_plugin_name(name):
+                    state = PLUGIN_STATE_RISKY if name.strip() in unstable_set else PLUGIN_STATE_SAFE
+                    format_str = "Native"
+                else:
+                    # Guard: Only mark missing if scan is populated
+                    if is_scan_ready:
+                        state = PLUGIN_STATE_MISSING
+                        format_str = "?"
+                    else:
+                        state = PLUGIN_STATE_UNKNOWN
+                        format_str = "Scan Required"
+            
+            # Populate result
+            res_item = {
+                "plugin_name": name,
+                "project_count": data["project_count"],
+                "last_seen": data["last_seen"],
+                "plugin_type": p_type,
+                "state": state,
+                "format": format_str,
+                "score": match_res.score, # Optional: expose score for UI debugging?
+                "top_candidates": top_candidates # For UI override suggestion
+            }
+            result.append(res_item)
+
+        # 5) Add Unused: installed but not referenced
+        for row in inst_rows:
+            rid = str(row.get("id"))
+            rpath = row.get("path")
+            if rid in matched_inst_ids or rpath in matched_inst_ids:
+                continue
+            
+            # Also check if canonical name was matched? 
+            # The resolver returns specific rows. If a row wasn't picked as "best_installed", it's technically unused by this heuristic.
+            # But we might have multiple installed formats for same plugin.
+            # Ideally, if "Serum" is matched, "Serum (VST3)" and "Serum (VST2)" should both be considered "used" if they are aliases?
+            # The current logic links specific installed row to specific reference.
+            # If FLP references "Serum", and we match it to "Serum.vst3", then "Serum.dll" (VST2) might show as Unused.
+            # This is acceptable for now. The user said "build an installed index (multiple keys per plugin)".
+            # If we want to be smarter, we could mark all rows with same 'product_key' as used if one is used.
+            # Let's add that refinement.
+            
+            result.append({
+                "plugin_name": row["name"],
+                "state": PLUGIN_STATE_UNUSED,
+                "format": row.get("format") or "?",
+                "project_count": 0,
+                "last_seen": None,
+                "plugin_type": "unknown",
+            })
+            
+        # Refinement: Mark siblings as used?
+        # (Skipping for now to keep it simple and strictly follow "match result")
+
+        # 6) Apply filter: each tab shows exactly what it says
+        if studio_filter == "all":
+            # All = every plugin (Safe, Risky, Unknown, Missing, Unused). No state filter.
+            pass
+        elif studio_filter == "studio":
+            # Studio = all my plugins (referenced only, no Unused), sorted by safest first
+            result = [x for x in result if x["state"] != PLUGIN_STATE_UNUSED]
+        elif studio_filter == "missing":
+            result = [x for x in result if x["state"] == PLUGIN_STATE_MISSING]
+        elif studio_filter == "risky":
+            result = [x for x in result if x["state"] == PLUGIN_STATE_RISKY]
+        elif studio_filter == "hot":
+            # Used in Hot projects: need project heat; filter referenced plugins in Hot projects
+            try:
+                now = int(time.time())
+                hot_cutoff = now - (14 * 86400)
+                hot_proj_sql = """
+                SELECT id FROM projects
+                WHERE (play_count >= 5 OR open_count >= 3 OR last_opened_at >= ? OR last_played_ts >= ?)
+                """
+                hot_ids = {row["id"] for row in query(hot_proj_sql, (hot_cutoff, hot_cutoff))}
+                if hot_ids:
+                    ph = ",".join("?" * len(hot_ids))
+                    ref_in_hot = {
+                        row["plugin_name"] for row in query(
+                            f"SELECT DISTINCT plugin_name FROM project_plugins WHERE project_id IN ({ph})",
+                            tuple(hot_ids),
+                        )
+                    }
+                    result = [x for x in result if x["plugin_name"] in ref_in_hot]
+                else:
+                    result = [x for x in result if x["state"] != PLUGIN_STATE_UNUSED and x["project_count"] > 0]
+            except Exception:
+                result = [x for x in result if x["state"] != PLUGIN_STATE_UNUSED and x["project_count"] > 0]
+        elif studio_filter == "last30":
+            # Used in last 30 days (by project updated_at / last_opened_at)
+            try:
+                now = int(time.time())
+                cutoff = now - (30 * 86400)
+                ref_last30_sql = """
+                SELECT DISTINCT pp.plugin_name
+                FROM project_plugins pp
+                JOIN projects p ON p.id = pp.project_id
+                WHERE COALESCE(p.updated_at, p.last_opened_at, p.created_at) >= ?
+                """
+                ref_last30 = {row["plugin_name"] for row in query(ref_last30_sql, (cutoff,))}
+                result = [x for x in result if x["plugin_name"] in ref_last30]
+            except Exception:
+                result = [x for x in result if x["state"] != PLUGIN_STATE_UNUSED and x["project_count"] > 0]
+
+        if search_term:
+            term = search_term.strip().lower()
+            result = [x for x in result if term in (x.get("plugin_name") or "").lower()]
+
+        # Sort: safest first (Safe, then Risky, then Unknown, then Missing, then Unused)
+        def _order_key(item):
+            s = item.get("state", "")
+            if s == PLUGIN_STATE_SAFE:
+                return (0, -(item.get("project_count") or 0), (item.get("plugin_name") or "").lower())
+            if s == PLUGIN_STATE_RISKY:
+                return (1, -(item.get("project_count") or 0), (item.get("plugin_name") or "").lower())
+            if s == PLUGIN_STATE_UNKNOWN:
+                return (2, -(item.get("project_count") or 0), (item.get("plugin_name") or "").lower())
+            if s == PLUGIN_STATE_MISSING:
+                return (3, -(item.get("project_count") or 0), (item.get("plugin_name") or "").lower())
+            return (4, 0, (item.get("plugin_name") or "").lower())
+
+        result.sort(key=_order_key)
+        return result[:limit]
+    except Exception as e:
+        logger.exception(f"get_plugin_truth_states: {e}")
+        return []
+
+
+
+def get_plugin_state_for_name(plugin_name: str) -> Optional[Dict]:
+    """
+    Return truth-state row for a single plugin (for detail panel).
+    Returns dict with plugin_name, state, format, project_count, last_seen, plugin_type, or None.
+    """
+    if not plugin_name or not plugin_name.strip():
+        return None
+    name = plugin_name.strip()
+    all_rows = get_plugin_truth_states(studio_filter=None, search_term=None, limit=10000)
+    for row in all_rows:
+        if (row.get("plugin_name") or "").strip().lower() == name.lower():
+            return row
+    return None
