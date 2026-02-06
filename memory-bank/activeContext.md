@@ -1,14 +1,14 @@
 # Active Context
 
-**Last Updated:** 2026-02-03
+**Last Updated:** 2026-02-05
 
 ## Current Focus
 
-**Rendering Engine** — Core implementation complete. Safe FL Studio CLI integration, single-project and batch folder rendering with backup exclusions, timeout protection, and progress tracking. **Plugin Matching** and **Activity Heat** are implemented in-tree (some new files still untracked).
+**Rendering Engine** — Core implementation complete. Safe FL Studio CLI integration, single-project and batch folder rendering with backup exclusions, timeout protection, and progress tracking. **Plugin Matching** and **Activity Heat** are implemented in-tree (some new files still untracked). **Plugin page freeze** fixed (detail load in background + cache).
 
-## Recent Changes (2026-02-03)
+## Recent Changes (2026-02-05)
 
-**Sync:** Working tree — 20 modified (detector, app, migrations, flp_parser, library_scanner, backend, delegates, plugin_details, plugins_panel, project_details, track_details, plugin_intelligence_view, projects_view, settings_dialog/view, projects_model, plugin_scanner, memory-bank); 7 untracked (rendering/, core/activity_heat.py, render_dialogs.py, utils/plugin_aliases_data.py, utils/plugin_matcher.py, docs/plugin-matching-system.md, project_view_ui_demo.html).
+**Sync:** Working tree — 4 modified, line-ending only (LF→CRLF): `database/migrations.py`, `ui/panels/plugin_details.py`, `ui/panels/plugins_panel.py`, `utils/plugin_scanner.py`. No substantive code changes since last sync.
 
 ### Rendering Engine Implementation ✅ (Major Feature)
 - **Core Logic (`rendering/`)**:
