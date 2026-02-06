@@ -4,158 +4,69 @@
 
 ![FruityWolf](assets/banner.png)
 
-## Features
+👋 **Hi there! Welcome to FruityWolf.**
 
-### 🎵 Spotify-grade Experience
-- **Modern Dark Theme** with glass morphism and smooth animations
-- **Instant In-App Playback** — No external players needed
-- **Waveform Visualization** with playhead, zoom, and scrubbing
-- **Keyboard Shortcuts** for power users
+FruityWolf is a passion project designed to solve a problem we all have: **finding that one beat we made three months ago.** Instead of digging through endless folders or waiting for FL Studio to load just to hear a 10-second loop, FruityWolf gives you a beautiful, instant way to browse, preview, and organize your projects.
 
-### 📚 Intelligent Library Management
-- **Auto-scanning** of FL Studio project folders
-- **BPM & Key Detection** (auto-guess + manual override)
-- **Tags & Notes** — Organize with mood, genre, and custom tags
-- **Favorites & Playlists** — Multiple playlists with drag/drop
+Think of it as the missing media player for your FL Studio life.
 
-### 🔍 Powerful Search
-- Full-text search across track names, projects, tags, notes
-- Filter by BPM range, Key, Tags, Favorites
+---
 
-### 📂 Project Drill-down
-- Open FLP files directly
-- Browse Stems, Samples, Audio, Backup subfolders
-- Preview all audio files in-app
+## ✨ Features You'll Love
 
-### 🛡️ Non-Destructive
-- Never moves or modifies your files
-- Only indexes and caches thumbnails/waveforms
+### 🎵 Instant Playback
+Stop waiting for plugins to load. FruityWolf renders previews of your projects so you can skim through your entire library instantly. It's like having Spotify for your own hard drive.
 
-## Installation
+### 📚 Visual Library
+Your projects aren't just filenames anymore.
+- **Waveforms:** See the structure of your track before you play it.
+- **Heat Maps:** We track which projects you open the most (Hot) and which ones are gathering dust (Cold).
+- **Tags & Moods:** Tag that dark trap beat as "Aggressive" or that lo-fi loop as "Chill" so you can find the right vibe in seconds.
 
-### From Release (Recommended)
-1. Download `FruityWolf-Setup.exe` from [Releases](https://github.com/FruityWolf/FruityWolf/releases)
-2. Run the installer
-3. Launch FruityWolf
+### 🔍 Search That Actually Works
+Remember that beat you made in D Minor at 140 BPM? FruityWolf does.
+- Search by **Key**, **BPM**, **Genre**, or **Tags**.
+- Filter by "Favorites" to keep your best work one click away.
 
-### From Source
-```bash
-# Clone the repository
-git clone https://github.com/FruityWolf/FruityWolf.git
-cd FruityWolf
+### 🛡️ Safe & Non-Destructive
+We know your files are sacred. FruityWolf is a **read-only** browser. It indexes your folders and creates a separate cache for waveforms and thumbnails, but it **never** modifies, moves, or touches your actual project files.
 
-# Create virtual environment
-python -m venv venv
-venv\Scripts\activate
+---
 
-# Install dependencies
-pip install -r requirements.txt
+## 🚀 Getting Started
 
-# Run the application
-python -m FruityWolf
-```
+We've made it super easy to get running.
 
-## Building from Source
+### Option 1: The Easy Way (Recommended)
+1.  Go to our [**Releases Page**](https://github.com/SagineBM/FruityWolf/releases/latest).
+2.  Download the **`FruityWolf.exe`** (Single File) or **`FruityWolf-Folder.zip`** (Faster Startup).
+3.  Run it! No installation required.
 
-```bash
-# Build Windows executable
-python build.py
-```
+### Option 2: Build It Yourself
+If you're a developer or just curious, you can build it from source! Check out our [**Build Guide**](BUILD.md) for simple instructions.
 
-The executable will be in `dist/FruityWolf/`.
+---
 
-## System Requirements
+## 🛠️ Under the Hood
 
-- **OS:** Windows 10/11
-- **Python:** 3.11+ (for development)
-- **RAM:** 4GB minimum, 8GB recommended
-- **Storage:** 500MB for app + cache space
+FruityWolf is built with love and some pretty cool tech:
+-   **Interface:** [PySide6 (Qt)](https://doc.qt.io/qtforpython-6/) for a snappy, native feel.
+-   **Audio:** [python-vlc](https://github.com/oaubert/python-vlc) for reliable playback.
+-   **Analysis:** [librosa](https://librosa.org/) and [NumPy](https://numpy.org/) for the audio magic.
 
-## Configuration
+## 👨‍💻 Credits
 
-App data is stored in `%APPDATA%\FruityWolf\` (Windows):
-- `config.json` — User settings (created on first run)
-- `library.db` — Track database
-- `cache/` — Waveform and thumbnail cache
+**Created & Built by:** [Mohssine Bencaga](https://github.com/SagineBM)
 
-A sample config with safe defaults is provided as [config.sample.json](config.sample.json). See [docs/configuration.md](docs/configuration.md) for options.
+This tool was born out of the need for better workflow in music production. If you find it useful, feel free to star the repo or say hi!
 
-## Keyboard Shortcuts
+---
 
-Press `?` or `F1` in the app to see all shortcuts.
+## 🤝 Contributing
 
-### Playback
-| Shortcut | Action |
-|----------|--------|
-| `Space` | Play/Pause |
-| `→` | Next track |
-| `←` | Previous track |
-| `↑` | Volume up |
-| `↓` | Volume down |
-| `M` | Toggle mute |
-| `S` | Toggle shuffle |
-| `R` | Cycle repeat mode (None → All → One) |
+Found a bug? Have a crazy idea? We'd love to hear it!
+Check out [CONTRIBUTING.md](CONTRIBUTING.md) to see how you can help make FruityWolf even better.
 
-### Navigation
-| Shortcut | Action |
-|----------|--------|
-| `Ctrl+/` | Focus search |
-| `Ctrl+1` | Go to Library |
-| `Ctrl+2` | Go to Favorites |
-| `Ctrl+3` | Go to Playlists |
-| `Ctrl+4` | Go to Settings |
-| `J` | Select next track |
-| `K` | Select previous track |
-| `Enter` | Play selected track |
-| `Esc` | Clear search |
+## 📄 License
 
-### UI Controls
-| Shortcut | Action |
-|----------|--------|
-| `Ctrl+B` | Toggle sidebar |
-| `Ctrl+D` | Toggle details panel |
-| `F5` | Rescan library |
-| `Ctrl+L` | Toggle favorite |
-| `?` | Show keyboard shortcuts help |
-
-
-## File Structure
-
-```
-FruityWolf/
-├── FruityWolf/
-│   ├── __init__.py
-│   ├── __main__.py
-│   ├── app.py              # Main application
-│   ├── database/           # SQLite models & migrations
-│   ├── scanner/            # Library scanning
-│   ├── player/             # Audio playback
-│   ├── waveform/           # Waveform extraction
-│   ├── analysis/           # BPM/Key detection
-│   ├── ui/                 # QML UI components
-│   └── utils/              # Utilities
-├── qml/                    # QML UI files
-├── assets/                 # Icons, fonts, images
-├── requirements.txt
-├── build.py
-└── README.md
-```
-
-## Documentation
-
-See [docs/](docs/) for installation, building, architecture, development, and configuration.
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for how to set up a dev environment, run tests, and submit changes. We also have a [Code of Conduct](CODE_OF_CONDUCT.md) and [Security](SECURITY.md) policy.
-
-## License
-
-MIT License — See [LICENSE](LICENSE)
-
-## Acknowledgments
-
-- Built with [PySide6](https://doc.qt.io/qtforpython-6/)
-- Audio powered by [python-vlc](https://github.com/oaubert/python-vlc)
-- Waveform visualization with [NumPy](https://numpy.org/)
-- BPM detection with [librosa](https://librosa.org/)
+Open source and free to use under the [MIT License](LICENSE).

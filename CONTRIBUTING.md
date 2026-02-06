@@ -1,95 +1,91 @@
-# Contributing to FruityWolf
+# 🤝 Contributing to FruityWolf
 
-Thank you for your interest in contributing to FruityWolf. This document explains how to get set up, run the app and tests, follow our code style, and submit changes.
+First off, **thank you!** The fact that you're here reading this means you want to help make this tool better, and that's awesome.
 
-## Getting started
+Whether you're fixing a typo, adding a cool new feature, or refactoring our messy code (we know, we know), your help is welcome.
 
-### Prerequisites
+---
 
-- **Python 3.11+**
-- **VLC** (for audio playback) — [download](https://www.videolan.org/vlc/)
-- **Git**
+## 🛠️ Setting Up Your Dev Environment
 
-### Clone and install
+We've tried to keep the setup as painless as possible.
 
-```bash
-git clone https://github.com/FruityWolf/FruityWolf.git
-cd FruityWolf
+### What You Need
+-   **Python 3.11+**
+-   **VLC Media Player** (Standard desktop version)
+-   **Git**
 
-# Create and activate a virtual environment
-python -m venv venv
-venv\Scripts\activate   # Windows
-# source venv/bin/activate  # macOS/Linux
+### The Setup Dance
+1.  **Fork & Clone:**
+    ```bash
+    git clone https://github.com/YOUR_USERNAME/FruityWolf.git
+    cd FruityWolf
+    ```
 
-# Install dependencies
-pip install -r requirements.txt
-```
+2.  **Virtual Env (Trust us, do this):**
+    ```bash
+    python -m venv venv
+    venv\Scripts\activate  # Windows
+    ```
 
-For optional BPM/Key analysis support:
+3.  **Install Dev Dependencies:**
+    ```bash
+    pip install -e ".[dev]"
+    ```
+    This installs everything you need for running tests and linting.
 
-```bash
-pip install "fruitywolf[analysis]"
-```
+4.  **Run the App:**
+    ```bash
+    python -m FruityWolf
+    ```
 
-For development (formatting, linting, tests, build):
+---
 
-```bash
-pip install "fruitywolf[dev]"
-```
+## 🧪 Testing
 
-### Run the application
-
-```bash
-python -m FruityWolf
-```
-
-### Run tests
+Please, *please* run the tests before submitting a PR. We don't want to break Mohssine's hard work!
 
 ```bash
 pytest tests/
 ```
 
-Run with verbose output:
+If you're adding a new feature, try to add a test for it. If you don't know how, just ask in the PR!
 
-```bash
-pytest tests/ -v
-```
+---
 
-## Code style
+## 🎨 Code Style
 
-We use **Black** and **Ruff** (see [pyproject.toml](pyproject.toml)).
+We use **Black** and **Ruff** to keep things looking sharp.
 
-- **Black**: line length 100, targets Python 3.11+
-- **Ruff**: pycodestyle, Pyflakes, isort, flake8-bugbear, comprehensions; E501 ignored (handled by Black)
-
-Format and lint before submitting:
-
+Before you commit, run:
 ```bash
 black FruityWolf tests scripts
 ruff check FruityWolf tests scripts
 ```
 
-## Pull request process
+(Or just install pre-commit hooks if you're fancy.)
 
-1. **Fork** the repository and create a branch from `master`.
-2. **Make your changes** — keep commits focused and messages clear.
-3. **Run tests** — `pytest tests/` must pass.
-4. **Format and lint** — run Black and Ruff as above.
-5. **Open a pull request** against `master` with a short description of the change and any related issue.
+---
 
-We may ask for adjustments. Once approved, a maintainer will merge.
+## 📝 Submitting a Pull Request
 
-## Where to discuss
+1.  **Branch out:** Create a new branch for your feature (`git checkout -b feature/cool-new-thing`).
+2.  **Commit:** Keep your commit messages clear.
+3.  **Push & PR:** Push to your fork and open a Pull Request against our `master` branch.
+4.  **Describe it:** Tell us what you changed and why. Screenshots are a bonus!
 
-- **Bugs and features**: [GitHub Issues](https://github.com/FruityWolf/FruityWolf/issues)
-- **Security**: see [SECURITY.md](SECURITY.md)
+---
 
-## Documentation and architecture
+## 🚧 Major Changes
 
-- **User and developer docs**: [docs/](docs/) — installation, building, architecture, development, configuration.
-- **Building for distribution**: [BUILD.md](BUILD.md)
-- **Roadmap**: [ROADMAP.md](ROADMAP.md)
+If you're planning a massive overhaul (like rewriting the audio engine or changing the database schema), it's probably a good idea to open an **Issue** first to discuss it. We don't want you wasting weeks on something that might conflict with our roadmap.
 
-## Code of conduct
+**Project Lead:** [Mohssine Bencaga](https://github.com/SagineBM)
 
-Please read [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). By participating, you agree to uphold it.
+---
+
+## 📜 Code of Conduct
+
+Be nice. Be respectful. We're all here to make cool stuff for music producers. See [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for the fine print.
+
+Happy coding! 🚀
