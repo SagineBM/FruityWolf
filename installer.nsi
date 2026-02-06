@@ -4,6 +4,10 @@
 !include "MUI2.nsh"
 !include "FileFunc.nsh"
 
+; Custom Icon
+!define MUI_ICON "assets\icon.ico"
+!define MUI_UNICON "assets\icon.ico"
+
 ; App Info
 Name "FruityWolf"
 OutFile "dist\FruityWolf-Installer\FruityWolf-Setup.exe"
