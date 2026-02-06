@@ -2,7 +2,7 @@
 
 > **"Spotify for Producers"** — A beautiful, modern library manager and player for FL Studio project folders.
 
-![FruityWolf](assets/fruitywolf_icons/app_icon.svg)
+![FruityWolf](assets/FruityWolf_icons/app_icon.svg)
 
 👋 **Hi there! Welcome to FruityWolf.**
 
